@@ -66,8 +66,7 @@ public:
     SM50ShaderBitcode cs_bitcode;
 
     if (SM50Compile(shader_cs, (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&common, "cs_main", &cs_bitcode, &sm50_err)) {
-      ERR("Failed to compile cs shader");
-      return E_FAIL;
+      return ShaderCompileFailed("cs", sm50_err);
     }
 
     SM50_COMPILED_BITCODE cs_bitcode_compiled;

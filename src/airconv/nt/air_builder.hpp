@@ -331,6 +331,8 @@ public:
     cos,
     sin,
     fabs,
+    // MacNeutron (DXIL front end)
+    tan, acos, asin, atan, cosh, sinh, tanh,
   };
 
   Value *CreateFPUnOp(FPUnOp Op, Value *Operand, bool FastVariant = true);

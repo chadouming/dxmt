@@ -17,6 +17,14 @@ airconv_src = files([
  'nt/dxbc_converter_base.cpp',
  'transforms/lower_16bit_texread.cpp',
  'transforms/simdgroup_implicit_membarrier.cpp',
+ 'dxil/dxil_container.cpp',
+ 'dxil/dxil_metadata.cpp',
+ 'dxil/dxil_initialize.cpp',
+ 'dxil/dxil_signature.cpp',
+ 'dxil/dxil_converter.cpp',
+ 'dxil/dxil_lower.cpp',
+ 'dxil/dxil_lower_resources.cpp',
+ 'dxil/dxil_lower_math.cpp',
 ])
 
 airconv_cli_src = files(['airconv_cli.cpp'])

@@ -1,4 +1,5 @@
 #include "dxbc_converter.hpp"
+#include "dxil/dxil.hpp"
 #include "DXBCParser/BlobContainer.h"
 #include "DXBCParser/ShaderBinary.h"
 #include "airconv_error.hpp"
@@ -1008,6 +1009,27 @@ AIRCONV_API int SM50Initialize(
     return 1;
   }
 
+  // MacNeutron: a container with a DXIL part (Shader Model 6) goes to the DXIL front end.
+  {
+    auto dxil_container = dxmt::dxil::FindDXIL(pBytecode, BytecodeSize);
+    if (!dxil_container) {
+      errorOut << llvm::toString(dxil_container.takeError());
+      *ppError = (sm50_error_t)errorObj;
+      return 1;
+    }
+    if (*dxil_container) {
+      auto sm50_shader = new dxmt::dxbc::SM50ShaderInternal();
+      if (auto err = dxmt::dxil::InitializeDXIL(**dxil_container, sm50_shader, pRefl)) {
+        delete sm50_shader;
+        errorOut << llvm::toString(std::move(err));
+        *ppError = (sm50_error_t)errorObj;
+        return 1;
+      }
+      *ppShader = (sm50_shader_t)sm50_shader;
+      return 0;
+    }
+  }
+
   UINT codeBlobIdx = DXBCParser.FindNextMatchingBlob(DXBC_GenericShaderEx);
   if (codeBlobIdx == DXBC_BLOB_NOT_FOUND) {
     codeBlobIdx = DXBCParser.FindNextMatchingBlob(DXBC_GenericShader);
@@ -1369,7 +1391,15 @@ AIRCONV_API int SM50Compile(
   auto pModule = std::make_unique<Module>("shader.air", context);
   initializeModule(*pModule);
 
-  if (auto err = dxmt::dxbc::convertDXBC(
+  if (auto sm50_shader = (dxmt::dxbc::SM50ShaderInternal *)pShader; sm50_shader->dxil) {
+    auto converted = dxmt::dxil::ConvertDXIL(sm50_shader, FunctionName, context, pArgs);
+    if (!converted) {
+      llvm::handleAllErrors(converted.takeError(), [&](const UnsupportedFeature &u) { errorOut << u.msg; });
+      *ppError = (sm50_error_t)errorObj;
+      return 1;
+    }
+    pModule = std::move(*converted);
+  } else if (auto err = dxmt::dxbc::convertDXBC(
         pShader, FunctionName, context, *pModule, pArgs
       )) {
     llvm::handleAllErrors(std::move(err), [&](const UnsupportedFeature &u) {

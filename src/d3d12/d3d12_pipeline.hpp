@@ -18,6 +18,7 @@
 
 #pragma once
 #include "airconv_public.h"
+#include "log/log.hpp"
 
 namespace dxmt {
 
@@ -77,5 +78,14 @@ public:
       SM50FreeError(sm50_error_);
   }
 };
+
+// airconv failed to compile a shader: log its message. A DXIL shader DXMT can't translate yet (the DXIL front end's
+// messages start with "DXIL:") gets E_NOTIMPL, anything else E_FAIL. (MacNeutron)
+inline HRESULT
+ShaderCompileFailed(const char *stage, SM50Error &error) {
+  auto message = SM50GetErrorMessageString(error);
+  ERR("Failed to compile ", stage, " shader: ", message);
+  return message.rfind("DXIL:", 0) == 0 ? E_NOTIMPL : E_FAIL;
+}
 
 } // namespace dxmt

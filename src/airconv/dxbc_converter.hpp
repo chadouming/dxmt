@@ -18,6 +18,8 @@
 #include "shader_common.hpp"
 
 #include "airconv_public.h"
+#include "dxil/dxil_types.hpp"
+#include <memory>
 
 namespace dxmt::dxbc {
 
@@ -448,6 +450,8 @@ public:
   uint32_t gs_max_vertex_output = 0;
   uint32_t gs_instance_count = 1;
   uint32_t ps_has_coverage_output = 0;
+  /* MacNeutron: set for a DXIL shader, whose SM50Compile takes the DXIL front end (dxil/) instead of bbs */
+  std::shared_ptr<const dxmt::dxil::DXILShader> dxil;
 
   BasicBlock *entry() const {
     return bbs.front().get();
