@@ -179,6 +179,16 @@ AddVertexHandlers(const EntryInfo &entry, SM50ShaderInternal *shader, std::map<u
       });
       break;
     }
+    case SemanticKind::RenderTargetArrayIndex:
+    case SemanticKind::ViewPortArrayIndex: {
+      auto index = e.kind == SemanticKind::RenderTargetArrayIndex ? fs.DefineOutput(air::OutputRenderTargetArrayIndex{})
+                                                                  : fs.DefineOutput(air::OutputViewportArrayIndex{});
+      handlers.push_back([=](SignatureContext &sig) {
+        if (!sig.skip_vertex_output)
+          sig.epilogue >> pop_output_reg(reg, mask, index);
+      });
+      break;
+    }
     case SemanticKind::Arbitrary:
       for (uint32_t r = 0; r < e.rows; r++) {
         auto index = fs.DefineOutput(Varying(e, r));
@@ -212,11 +222,15 @@ AddPixelHandlers(const EntryInfo &entry, SM50ShaderInternal *shader, std::map<ui
     case SemanticKind::IsFrontFace:
     case SemanticKind::SampleIndex:
     case SemanticKind::PrimitiveID:
-    case SemanticKind::Coverage: {
-      uint32_t index = e.kind == SemanticKind::IsFrontFace   ? fs.DefineInput(air::InputFrontFacing{})
-                       : e.kind == SemanticKind::SampleIndex ? fs.DefineInput(air::InputSampleIndex{})
-                       : e.kind == SemanticKind::PrimitiveID ? fs.DefineInput(air::InputPrimitiveID{})
-                                                             : fs.DefineInput(air::InputInputCoverage{});
+    case SemanticKind::Coverage:
+    case SemanticKind::RenderTargetArrayIndex:
+    case SemanticKind::ViewPortArrayIndex: {
+      uint32_t index = e.kind == SemanticKind::IsFrontFace              ? fs.DefineInput(air::InputFrontFacing{})
+                       : e.kind == SemanticKind::SampleIndex            ? fs.DefineInput(air::InputSampleIndex{})
+                       : e.kind == SemanticKind::PrimitiveID            ? fs.DefineInput(air::InputPrimitiveID{})
+                       : e.kind == SemanticKind::RenderTargetArrayIndex ? fs.DefineInput(air::InputRenderTargetArrayIndex{})
+                       : e.kind == SemanticKind::ViewPortArrayIndex     ? fs.DefineInput(air::InputViewportArrayIndex{})
+                                                                        : fs.DefineInput(air::InputInputCoverage{});
       if (e.start_row < 0)
         unpacked[e.id] = index;
       else
