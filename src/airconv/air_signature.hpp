@@ -543,6 +543,8 @@ struct InputThreadPositionInGrid {};        // uint3
 struct InputThreadgroupPositionInGrid {};   // uint3
 
 struct InputThreadgroupsPerGrid {};         // uint3
+struct InputThreadIndexInSimdgroup {};      // uint (MacNeutron: DXIL wave ops)
+struct InputThreadsPerSimdgroup {};         // uint (MacNeutron: DXIL wave ops)
 
 struct OutputRenderTarget {
   bool dual_source_blending;
@@ -601,7 +603,7 @@ using FunctionInput = template_concat_t<
     /* kernel */
     InputThreadIndexInThreadgroup, InputThreadPositionInThreadgroup,
     InputThreadPositionInGrid, InputThreadgroupPositionInGrid,
-    InputThreadgroupsPerGrid>>;
+    InputThreadgroupsPerGrid, InputThreadIndexInSimdgroup, InputThreadsPerSimdgroup>>;
 
 using FunctionOutput = std::variant<
   /* vertex */

@@ -768,6 +768,22 @@ auto FunctionSignatureBuilder::CreateFunction(
             ->string("mtl_threadgroups_per_grid");
           return msl_uint3.get_llvm_type(context);
         },
+        [&](const InputThreadIndexInSimdgroup &) {
+          metadata_field.string("air.thread_index_in_simdgroup")
+            ->string("air.arg_type_name")
+            ->string("uint")
+            ->string("air.arg_name")
+            ->string("mtl_thread_index_in_simdgroup");
+          return msl_uint.get_llvm_type(context);
+        },
+        [&](const InputThreadsPerSimdgroup &) {
+          metadata_field.string("air.threads_per_simdgroup")
+            ->string("air.arg_type_name")
+            ->string("uint")
+            ->string("air.arg_name")
+            ->string("mtl_threads_per_simdgroup");
+          return msl_uint.get_llvm_type(context);
+        },
         [&](const InputVertexID &) {
           metadata_field.string("air.vertex_id")
             ->string("air.arg_type_name")

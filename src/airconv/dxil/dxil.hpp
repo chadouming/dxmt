@@ -54,6 +54,8 @@ llvm::Error InitializeDXIL(const Container &container, dxbc::SM50ShaderInternal 
 // `unpacked_inputs` (see DXILShader).
 llvm::Error AddSignatureHandlers(const EntryInfo &entry, const llvm::Module &module, dxbc::SM50ShaderInternal *shader,
                                  std::map<uint32_t, uint32_t> &unpacked_inputs);
+// dxil_signature.cpp: defines the simdgroup lane inputs when the module uses wave operations.
+void AddWaveInputs(const llvm::Module &module, dxbc::SM50ShaderInternal *shader, uint32_t &lane_index_arg, uint32_t &lane_count_arg);
 
 // dxil_converter.cpp: SM50Compile's DXIL branch; returns the AIR module, ready for airconv's passes.
 llvm::Expected<std::unique_ptr<llvm::Module>> ConvertDXIL(
