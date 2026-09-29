@@ -18,6 +18,8 @@
 
 #include "com/com_pointer.hpp"
 #include "d3d12_pageable.hpp"
+#include <algorithm>
+#include <cstring>
 
 namespace dxmt {
 
@@ -27,6 +29,26 @@ public:
 
   HRESULT
   Initialize(const D3D12_QUERY_HEAP_DESC *pDesc) {
+    switch (pDesc->Type) {
+    case D3D12_QUERY_HEAP_TYPE_PIPELINE_STATISTICS:
+      stride = sizeof(D3D12_QUERY_DATA_PIPELINE_STATISTICS);
+      break;
+    case D3D12_QUERY_HEAP_TYPE_SO_STATISTICS:
+      stride = sizeof(D3D12_QUERY_DATA_SO_STATISTICS);
+      break;
+    default:
+      stride = sizeof(UINT64);
+      break;
+    }
+    // Zeroed: only occlusion queries write results; the other types resolve to zeros.
+    WMTBufferInfo info;
+    info.length = std::max(1u, pDesc->Count) * (uint64_t)stride;
+    info.options = WMTResourceStorageModeShared; // tracked: the passes counting into it, then resolves, in order
+    info.memory.set(0);
+    results = device_->GetMTLDevice().newBuffer(info);
+    if (!results || !info.memory.get_accessible_or_null())
+      return E_OUTOFMEMORY;
+    memset(info.memory.get_accessible_or_null(), 0, info.length);
     return S_OK;
   }
 

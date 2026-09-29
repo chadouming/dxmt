@@ -101,6 +101,7 @@ struct RenderEncoderData : EncoderData {
   uint8_t dsv_readonly_flags;
   uint8_t render_target_count;
   bool use_visibility_result = 0;
+  obj_handle_t visibility_buffer = 0; // MacNeutron: the occlusion query heap this pass counts samples into
   bool use_tessellation = 0;
   bool use_geometry = 0;
 };

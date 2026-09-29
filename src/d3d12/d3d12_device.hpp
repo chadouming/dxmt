@@ -124,6 +124,10 @@ public:
 
 class MTLD3D12QueryHeap : public ID3D12QueryHeap {
 public:
+  // MacNeutron: each query's result as ResolveQueryData writes it, `stride` bytes apart. Occlusion counts (Metal
+  // visibility results) accumulate here across render passes until a resolve copies them out and zeroes them.
+  WMT::Reference<WMT::Buffer> results;
+  uint32_t stride = 8;
 };
 
 class MTLD3D12PipelineState : public ID3D12PipelineState {

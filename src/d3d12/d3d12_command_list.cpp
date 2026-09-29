@@ -177,6 +177,13 @@ class MTLD3D12GraphicsCommandListImpl : public MTLD3D12DeviceChild<MTLD3D12Graph
   FLOAT blend_factor_[4];
   UINT8 stencil_ref_;
 
+  // The active occlusion query (MacNeutron; Metal visibility results): its heap, its result's offset and the mode,
+  // applied to each render pass it spans. One at a time, as D3D12 allows.
+  MTLD3D12QueryHeap *query_heap_;
+  uint64_t query_offset_;
+  WMTVisibilityResultMode query_mode_;
+  bool query_dirty_;
+
 public:
   MTLD3D12GraphicsCommandListImpl(MTLD3D12Device *pDevice) : MTLD3D12DeviceChild<MTLD3D12GraphicsCommandList>(pDevice) {}
 
@@ -210,6 +217,11 @@ public:
     blend_factor_[2] = 1.0f;
     blend_factor_[3] = 1.0f;
     stencil_ref_ = 0;
+
+    query_heap_ = nullptr;
+    query_offset_ = 0;
+    query_mode_ = WMTVisibilityResultModeDisabled;
+    query_dirty_ = false;
 
     rootsig_graphics_ = nullptr;
     memset(rootarg_graphics_staging_, 0, sizeof(rootarg_graphics_staging_));
@@ -319,7 +331,12 @@ public:
 
   DrawCallStatus
   PreDraw(bool SkipResourceBinding = false, bool Indexed = false) {
-    if (!allocator_->encoder_current || allocator_->encoder_current->type != EncoderType::Render) {
+    // A render pass counts into one query heap: an active query in another heap needs a new pass.
+    auto current = allocator_->encoder_current;
+    bool other_query_heap = query_heap_ && current && current->type == EncoderType::Render &&
+                            static_cast<RenderEncoderData *>(current)->visibility_buffer &&
+                            static_cast<RenderEncoderData *>(current)->visibility_buffer != query_heap_->results.handle;
+    if (!current || current->type != EncoderType::Render || other_query_heap) {
 
       allocator_->InvalidateCurrentPass();
       auto render = allocator_->AllocatePass<RenderEncoderData>();
@@ -389,6 +406,20 @@ public:
       dirty_state_.set(DirtyState::Viewport, DirtyState::ScissorRect);
       dirty_state_.set(DirtyState::BlendFactor, DirtyState::StencilRef);
       dirty_state_.set(DirtyState::GraphicsPipelineState);
+      query_dirty_ = query_heap_ != nullptr;
+    }
+
+    if (query_dirty_) {
+      auto render = static_cast<RenderEncoderData *>(allocator_->encoder_current);
+      if (query_heap_ && !render->visibility_buffer)
+        render->visibility_buffer = query_heap_->results.handle;
+      if (render->visibility_buffer) {
+        auto &cmd = allocator_->EncodeRenderCommand<wmtcmd_render_setvisibilitymode>();
+        cmd.type = WMTRenderCommandSetVisibilityMode;
+        cmd.mode = query_heap_ ? query_mode_ : WMTVisibilityResultModeDisabled;
+        cmd.offset = query_heap_ ? query_offset_ : 0;
+      }
+      query_dirty_ = false;
     }
 
     if (!pso_graphics_)
@@ -1501,12 +1532,22 @@ public:
 
   void STDMETHODCALLTYPE
   BeginQuery(ID3D12QueryHeap *pHeap, D3D12_QUERY_TYPE Type, UINT Index) {
-    DEBUG("BeginQuery");
+    // ponytail: occlusion only; timestamps and statistics resolve to zeros
+    if (!pHeap || (Type != D3D12_QUERY_TYPE_OCCLUSION && Type != D3D12_QUERY_TYPE_BINARY_OCCLUSION))
+      return;
+    query_heap_ = static_cast<MTLD3D12QueryHeap *>(pHeap);
+    query_offset_ = Index * sizeof(UINT64);
+    // Metal's boolean result reads 1, as D3D12's (d3d12_query checks it against D3DMetal)
+    query_mode_ = Type == D3D12_QUERY_TYPE_OCCLUSION ? WMTVisibilityResultModeCounting : WMTVisibilityResultModeBoolean;
+    query_dirty_ = true;
   };
 
   void STDMETHODCALLTYPE
   EndQuery(ID3D12QueryHeap *pHeap, D3D12_QUERY_TYPE Type, UINT Index) {
-    DEBUG("EndQuery");
+    if (Type != D3D12_QUERY_TYPE_OCCLUSION && Type != D3D12_QUERY_TYPE_BINARY_OCCLUSION)
+      return;
+    query_heap_ = nullptr;
+    query_dirty_ = true;
   };
 
   void STDMETHODCALLTYPE
@@ -1514,7 +1555,26 @@ public:
       ID3D12QueryHeap *pHeap, D3D12_QUERY_TYPE Type, UINT StartIndex, UINT QueryCount, ID3D12Resource *pDstBuffer,
       UINT64 AlignedDstBufferOffset
   ) {
-    DEBUG("ResolveQueryData");
+    if (!pHeap || !pDstBuffer || !QueryCount || !PreBlit())
+      return;
+    auto heap = static_cast<MTLD3D12QueryHeap *>(pHeap);
+    auto &copy = allocator_->EncodeBlitCommand<wmtcmd_blit_copy_from_buffer_to_buffer>();
+    copy.type = WMTBlitCommandCopyFromBufferToBuffer;
+    copy.src = heap->results.handle;
+    copy.src_offset = StartIndex * (uint64_t)heap->stride;
+    copy.dst = static_cast<MTLD3D12Resource *>(pDstBuffer)->buffer->current()->buffer();
+    copy.dst_offset = AlignedDstBufferOffset;
+    copy.copy_length = QueryCount * (uint64_t)heap->stride;
+    if (Type != D3D12_QUERY_TYPE_OCCLUSION && Type != D3D12_QUERY_TYPE_BINARY_OCCLUSION)
+      return;
+    // Render passes add to a query's count (it may span several): a resolved query starts over from zero.
+    // ponytail: a query begun again before it's resolved keeps adding; D3D12 apps resolve each use
+    auto &zero = allocator_->EncodeBlitCommand<wmtcmd_blit_fillbuffer>();
+    zero.type = WMTBlitCommandFillBuffer;
+    zero.buffer = heap->results.handle;
+    zero.offset = copy.src_offset;
+    zero.length = copy.copy_length;
+    zero.value = 0;
   };
 
   void STDMETHODCALLTYPE SetPredication(ID3D12Resource *pBuffer, UINT64 AlignedBufferOffset, D3D12_PREDICATION_OP Op) {

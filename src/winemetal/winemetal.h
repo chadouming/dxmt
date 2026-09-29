@@ -695,6 +695,7 @@ struct WMTRenderPassInfo {
   uint8_t tile_height;
   uint32_t render_target_height;
   uint32_t render_target_width;
+  uint8_t visibility_accumulate; // MacNeutron: visibility results add to the buffer instead of replacing it
   obj_handle_t visibility_buffer;
 };
 

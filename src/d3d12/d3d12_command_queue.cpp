@@ -294,6 +294,8 @@ public:
             render_pass_info.render_target_array_length = data->render_target_array_length;
             render_pass_info.render_target_width = data->render_target_width;
             render_pass_info.render_target_height = data->render_target_height;
+            render_pass_info.visibility_buffer = data->visibility_buffer;
+            render_pass_info.visibility_accumulate = data->visibility_buffer != 0;
           }
           auto encoder = cmdbuf.renderCommandEncoder(render_pass_info);
           // Geometry shader draws (MacNeutron) read resources in the object and mesh stages too.
