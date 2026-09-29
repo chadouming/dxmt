@@ -45,6 +45,64 @@ void StripDXIL(llvm::Module &module) {
       st->setName("dxil." + st->getName().substr(9).str());
 }
 
+// Points every use of `from` (a pointer) at `to`, the same object in another address space: GEPs, bitcasts and loads
+// are rebuilt or repointed; constant expressions become instructions first.
+llvm::Error Retarget(llvm::Value *from, llvm::Value *to) {
+  for (auto *user : llvm::make_early_inc_range(from->users())) {
+    if (auto ce = llvm::dyn_cast<llvm::ConstantExpr>(user)) {
+      for (auto *ce_user : llvm::make_early_inc_range(ce->users())) {
+        auto inst = llvm::dyn_cast<llvm::Instruction>(ce_user);
+        if (!inst)
+          return llvm::make_error<UnsupportedFeature>("DXIL: a static const array in a constant initializer");
+        auto expanded = ce->getAsInstruction(inst);
+        inst->replaceUsesOfWith(ce, expanded);
+      }
+      ce->destroyConstant();
+    }
+  }
+  for (auto *user : llvm::make_early_inc_range(from->users())) {
+    unsigned space = to->getType()->getPointerAddressSpace();
+    if (auto gep = llvm::dyn_cast<llvm::GetElementPtrInst>(user)) {
+      llvm::SmallVector<llvm::Value *, 4> indices(gep->indices());
+      auto moved = llvm::GetElementPtrInst::Create(gep->getSourceElementType(), to, indices, gep->getName(), gep);
+      moved->setIsInBounds(gep->isInBounds());
+      if (auto err = Retarget(gep, moved))
+        return err;
+      gep->eraseFromParent();
+    } else if (auto cast = llvm::dyn_cast<llvm::BitCastInst>(user)) {
+      auto elem = cast->getDestTy()->getNonOpaquePointerElementType();
+      auto moved = new llvm::BitCastInst(to, elem->getPointerTo(space), cast->getName(), cast);
+      if (auto err = Retarget(cast, moved))
+        return err;
+      cast->eraseFromParent();
+    } else if (auto load = llvm::dyn_cast<llvm::LoadInst>(user)) {
+      load->setOperand(load->getPointerOperandIndex(), to);
+    } else {
+      return llvm::make_error<UnsupportedFeature>("DXIL: a static const array used other than by loads");
+    }
+  }
+  return llvm::Error::success();
+}
+
+// DXIL keeps dynamically indexed `static const` arrays as address space 0 globals, which Metal can't link ("Undefined
+// symbols"); they belong in constant space, as airconv's immediate constant buffers. Mutable statics aren't supported.
+llvm::Error MoveConstantsToConstantSpace(llvm::Module &module) {
+  for (auto &gv : llvm::make_early_inc_range(module.globals())) {
+    if (gv.getAddressSpace() != 0 || gv.getName().startswith("llvm."))
+      continue;
+    if (!gv.isConstant() || !gv.hasInitializer())
+      return llvm::make_error<UnsupportedFeature>("DXIL: static (non-const) global " + gv.getName().str() + " not supported");
+    auto moved = new llvm::GlobalVariable(module, gv.getValueType(), true, gv.getLinkage(), gv.getInitializer(), "",
+                                          nullptr, llvm::GlobalValue::NotThreadLocal, 2);
+    moved->takeName(&gv);
+    moved->setAlignment(gv.getAlign());
+    if (auto err = Retarget(&gv, moved))
+      return err;
+    gv.eraseFromParent();
+  }
+  return llvm::Error::success();
+}
+
 } // namespace
 
 llvm::Expected<std::unique_ptr<llvm::Module>>
@@ -210,6 +268,8 @@ ConvertDXIL(SM50ShaderInternal *shader, const char *name, llvm::LLVMContext &con
     if (fn.getName().startswith("dx.op.") && fn.use_empty())
       fn.eraseFromParent();
   }
+  if (auto err = MoveConstantsToConstantSpace(*module))
+    return std::move(err);
   StripDXIL(*module);
   module->getOrInsertNamedMetadata(vertex ? "air.vertex" : pixel ? "air.fragment" : "air.kernel")->addOperand(function_metadata);
 
