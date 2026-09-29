@@ -23,6 +23,7 @@
 #include "d3d12_pipeline.hpp"
 #include "log/log.hpp"
 #include "d3d12_dxil_dump.hpp"
+#include "../d3d10/d3d10_blob.hpp"
 
 namespace dxmt {
 
@@ -125,8 +126,10 @@ public:
 
   virtual HRESULT STDMETHODCALLTYPE
   GetCachedBlob(ID3DBlob **blob) {
-    IMPLEMENT_ME
-    return E_NOTIMPL;
+    // An empty blob, as D3DMetal: a CachedPSO is accepted and ignored at creation.
+    if (!blob)
+      return E_POINTER;
+    return CreateBlobFromMalloc(0, blob);
   }
 };
 

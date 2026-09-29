@@ -373,7 +373,7 @@ public:
         auto [Heap, Index] = GetRenderTargetHeap(device_, dsv);
         auto AttachmentDesc = Heap->GetRenderTarget(Index);
         if (!AttachmentDesc.Texture)
-          continue;
+          break; // a null depth view: no depth attachment
         auto dsv_planar_flags = DepthStencilPlanarFlags(AttachmentDesc.Texture->pixelFormat(AttachmentDesc.View));
         if (dsv_planar_flags & 1) {
           auto &rt = render->depth;
@@ -1581,11 +1581,12 @@ public:
     IMPLEMENT_ME
   };
 
-  void STDMETHODCALLTYPE SetMarker(UINT Metadata, const void *data, UINT size) { IMPLEMENT_ME };
+  // Debugger annotations (PIX events): nothing to do here, as on the queue.
+  void STDMETHODCALLTYPE SetMarker(UINT Metadata, const void *data, UINT size) {};
 
-  void STDMETHODCALLTYPE BeginEvent(UINT Metadata, const void *data, UINT size) { IMPLEMENT_ME };
+  void STDMETHODCALLTYPE BeginEvent(UINT Metadata, const void *data, UINT size) {};
 
-  void STDMETHODCALLTYPE EndEvent() { IMPLEMENT_ME };
+  void STDMETHODCALLTYPE EndEvent() {};
 
   void STDMETHODCALLTYPE ExecuteIndirect(
       ID3D12CommandSignature *pCommandSignature, UINT MaxCommandCount, ID3D12Resource *pArgBuffer,
