@@ -36,7 +36,8 @@ llvm::Expected<HandleInfo> ResolveHandle(const EntryInfo &entry, llvm::Value *ha
 // Replaces dx.op calls with AIR, one call at a time, inside the AIR entry function being built.
 class Lowering {
 public:
-  Lowering(const DXILShader &dxil, dxbc::context &ctx);
+  // `vertex_outputs`: for a geometry shader, the vertex shader whose outputs its inputs read (from the payload).
+  Lowering(const DXILShader &dxil, dxbc::context &ctx, const EntryInfo *vertex_outputs = nullptr);
   // Lowers and erases `call`, or fails naming the op. Handle-producing calls are kept for Cleanup.
   llvm::Error Lower(llvm::CallInst *call);
   // Erases the handle-producing calls once nothing uses them.
@@ -73,8 +74,12 @@ private:
   llvm::Value *UnpackedInputOfKind(SemanticKind kind);
   llvm::Value *RegisterElementPointer(dxbc::register_file &file, const SignatureElement &e, llvm::Value *row, uint32_t col);
 
+  // Geometry shaders: the vertex shader output register and column holding input `e`'s row `row`, column `col`.
+  llvm::Expected<llvm::Value *> VertexOutputPointer(const SignatureElement &e, llvm::Value *row, uint32_t col, llvm::Value *vertex);
+
   const DXILShader &dxil;
   const EntryInfo &entry;
+  const EntryInfo *vertex_outputs;
   dxbc::context &ctx;
   llvm::IRBuilder<> &ir;
   llvm::air::AIRBuilder &air;

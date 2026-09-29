@@ -175,11 +175,20 @@ ReadEntry(const llvm::Module &module) {
     ReadResources(Node(res->getOperand(3)), ResourceClass::Sampler, entry.resources);
   }
   if (auto props = Node(ep->getOperand(4)))
-    for (unsigned i = 0; i + 1 < props->getNumOperands(); i += 2)
-      if (Int(props->getOperand(i)) == 4) // NumThreads
-        if (auto n = Node(props->getOperand(i + 1)))
-          for (unsigned d = 0; d < 3 && d < n->getNumOperands(); d++)
-            entry.numthreads[d] = Int(n->getOperand(d));
+    for (unsigned i = 0; i + 1 < props->getNumOperands(); i += 2) {
+      auto tag = Int(props->getOperand(i));
+      auto n = Node(props->getOperand(i + 1));
+      if (tag == 4 && n) // NumThreads
+        for (unsigned d = 0; d < 3 && d < n->getNumOperands(); d++)
+          entry.numthreads[d] = Int(n->getOperand(d));
+      if (tag == 1 && n && n->getNumOperands() >= 5) { // GSState: input primitive, max vertices, streams, topology, instances
+        entry.gs_input_primitive = Int(n->getOperand(0));
+        entry.gs_max_vertex_count = Int(n->getOperand(1));
+        entry.gs_stream_mask = Int(n->getOperand(2));
+        entry.gs_output_topology = Int(n->getOperand(3));
+        entry.gs_instances = Int(n->getOperand(4));
+      }
+    }
   return entry;
 }
 

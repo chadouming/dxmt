@@ -500,17 +500,23 @@ void setup_immediate_constant_buffer(
   air::AirType &types, llvm::Module &module, llvm::IRBuilder<> &builder
 );
 
+// MacNeutron: a shader body for the geometry pipeline builders: the block to branch to once the prologue is built;
+// it leaves through `epilogue`. Empty means the DXBC body (convert_basicblocks); the DXIL front end passes its own.
+using ShaderBody = std::function<llvm::Expected<llvm::BasicBlock *>(struct context &ctx, llvm::BasicBlock *epilogue)>;
+
 llvm::Error convert_dxbc_geometry_shader(
   SM50ShaderInternal *pShaderInternal, const char *name,
   SM50ShaderInternal *pVertexStage, llvm::LLVMContext &context,
-  llvm::Module &module, SM50_SHADER_COMPILATION_ARGUMENT_DATA *pArgs
+  llvm::Module &module, SM50_SHADER_COMPILATION_ARGUMENT_DATA *pArgs,
+  ShaderBody body = {}
 );
 
 llvm::Error convert_dxbc_vertex_for_geometry_shader(
   const SM50ShaderInternal *pShaderInternal, const char *name,
   const SM50ShaderInternal *pGeometryStage,
   llvm::LLVMContext &context, llvm::Module &module,
-  SM50_SHADER_COMPILATION_ARGUMENT_DATA *pArgs
+  SM50_SHADER_COMPILATION_ARGUMENT_DATA *pArgs,
+  ShaderBody body = {}
 );
 
 llvm::Error convert_dxbc_vertex_hull_shader(

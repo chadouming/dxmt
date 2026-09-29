@@ -99,7 +99,7 @@ get_vertex_primitive_count_in_warp(D3D10_SB_PRIMITIVE primitive, bool strip) {
 llvm::Error
 convert_dxbc_geometry_shader(
     SM50ShaderInternal *pShaderInternal, const char *name, SM50ShaderInternal *pVertexStage, llvm::LLVMContext &context,
-    llvm::Module &module, SM50_SHADER_COMPILATION_ARGUMENT_DATA *pArgs
+    llvm::Module &module, SM50_SHADER_COMPILATION_ARGUMENT_DATA *pArgs, ShaderBody body
 ) {
   auto func_signature = pShaderInternal->func_signature; // copy
   auto shader_info = &(pShaderInternal->shader_info);
@@ -496,7 +496,7 @@ convert_dxbc_geometry_shader(
     return err;
   }
 
-  auto real_entry = convert_basicblocks(pShaderInternal->entry(), ctx, epilogue_bb);
+  auto real_entry = body ? body(ctx, epilogue_bb) : convert_basicblocks(pShaderInternal->entry(), ctx, epilogue_bb);
   if (auto err = real_entry.takeError()) {
     return err;
   }
@@ -520,7 +520,7 @@ convert_dxbc_geometry_shader(
 llvm::Error
 convert_dxbc_vertex_for_geometry_shader(
     const SM50ShaderInternal *pShaderInternal, const char *name, const SM50ShaderInternal *pGeometryStage,
-    llvm::LLVMContext &context, llvm::Module &module, SM50_SHADER_COMPILATION_ARGUMENT_DATA *pArgs
+    llvm::LLVMContext &context, llvm::Module &module, SM50_SHADER_COMPILATION_ARGUMENT_DATA *pArgs, ShaderBody body
 ) {
   auto func_signature = pShaderInternal->func_signature; // copy
   auto shader_info = &(pShaderInternal->shader_info);
@@ -778,7 +778,7 @@ convert_dxbc_vertex_for_geometry_shader(
     return err;
   }
 
-  auto real_entry = convert_basicblocks(pShaderInternal->entry(), ctx, epilogue_bb);
+  auto real_entry = body ? body(ctx, epilogue_bb) : convert_basicblocks(pShaderInternal->entry(), ctx, epilogue_bb);
   if (auto err = real_entry.takeError()) {
     return err;
   }

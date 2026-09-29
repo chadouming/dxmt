@@ -1619,7 +1619,18 @@ AIRCONV_API int SM50CompileGeometryPipelineVertex(
   auto pModule = std::make_unique<Module>("shader.air", context);
   initializeModule(*pModule);
 
-  if (auto err = dxmt::dxbc::convert_dxbc_vertex_for_geometry_shader(
+  if (((dxbc::SM50ShaderInternal *)pVertexShader)->dxil || ((dxbc::SM50ShaderInternal *)pGeometryShader)->dxil) {
+    auto converted = dxmt::dxil::ConvertDXILGeometryPipeline(
+        true, (dxbc::SM50ShaderInternal *)pVertexShader, (dxbc::SM50ShaderInternal *)pGeometryShader, FunctionName,
+        context, pVertexShaderArgs
+    );
+    if (!converted) {
+      llvm::handleAllErrors(converted.takeError(), [&](const UnsupportedFeature &u) { errorOut << u.msg; });
+      *ppError = (sm50_error_t)errorObj;
+      return 1;
+    }
+    pModule = std::move(*converted);
+  } else if (auto err = dxmt::dxbc::convert_dxbc_vertex_for_geometry_shader(
         (dxbc::SM50ShaderInternal *)pVertexShader, FunctionName,
         (dxbc::SM50ShaderInternal *)pGeometryShader, context, *pModule,
         pVertexShaderArgs
@@ -1683,7 +1694,18 @@ AIRCONV_API int SM50CompileGeometryPipelineGeometry(
   auto pModule = std::make_unique<Module>("shader.air", context);
   initializeModule(*pModule);
 
-  if (auto err = dxmt::dxbc::convert_dxbc_geometry_shader(
+  if (((dxbc::SM50ShaderInternal *)pVertexShader)->dxil || ((dxbc::SM50ShaderInternal *)pGeometryShader)->dxil) {
+    auto converted = dxmt::dxil::ConvertDXILGeometryPipeline(
+        false, (dxbc::SM50ShaderInternal *)pVertexShader, (dxbc::SM50ShaderInternal *)pGeometryShader, FunctionName,
+        context, pGeometryShaderArgs
+    );
+    if (!converted) {
+      llvm::handleAllErrors(converted.takeError(), [&](const UnsupportedFeature &u) { errorOut << u.msg; });
+      *ppError = (sm50_error_t)errorObj;
+      return 1;
+    }
+    pModule = std::move(*converted);
+  } else if (auto err = dxmt::dxbc::convert_dxbc_geometry_shader(
         (dxbc::SM50ShaderInternal *)pGeometryShader, FunctionName,
         (dxbc::SM50ShaderInternal *)pVertexShader, context, *pModule,
         pGeometryShaderArgs

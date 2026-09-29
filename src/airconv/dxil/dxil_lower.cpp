@@ -64,9 +64,10 @@ ResolveHandle(const EntryInfo &entry, llvm::Value *handle) {
   }
 }
 
-Lowering::Lowering(const DXILShader &dxil, dxbc::context &ctx) :
+Lowering::Lowering(const DXILShader &dxil, dxbc::context &ctx, const EntryInfo *vertex_outputs) :
     dxil(dxil),
     entry(dxil.entry),
+    vertex_outputs(vertex_outputs),
     ctx(ctx),
     ir(ctx.builder),
     air(ctx.air),
@@ -178,6 +179,30 @@ Lowering::UnpackedInputOfKind(SemanticKind kind) {
   return nullptr;
 }
 
+llvm::Expected<llvm::Value *>
+Lowering::VertexOutputPointer(const SignatureElement &e, llvm::Value *row, uint32_t col, llvm::Value *vertex) {
+  // The vertex shader element with the same semantic (position by kind; others by name and index). Rows are
+  // consecutive semantic indices on both sides, so a dynamic row keeps its offset.
+  auto upper = [](std::string s) {
+    for (auto &c : s)
+      c = (char)toupper((unsigned char)c);
+    return s;
+  };
+  uint32_t first = e.semantic_indices.empty() ? 0 : e.semantic_indices[0];
+  if (vertex_outputs)
+    for (auto &f : vertex_outputs->outputs) {
+      if (f.start_row < 0 || f.kind != e.kind || (e.kind == SemanticKind::Arbitrary && upper(f.name) != upper(e.name)))
+        continue;
+      for (uint32_t r = 0; r < f.rows; r++)
+        if (e.kind != SemanticKind::Arbitrary || (r < f.semantic_indices.size() && f.semantic_indices[r] == first)) {
+          auto array_ty = llvm::cast<llvm::PointerType>(ctx.resource.input.ptr_int4->getType())->getNonOpaquePointerElementType();
+          auto reg = ir.CreateAdd(ir.getInt32(f.start_row + r), row);
+          return ir.CreateGEP(array_ty, ctx.resource.input.ptr_int4, {ir.getInt32(0), vertex, reg, ir.getInt32(f.start_col + col)});
+        }
+    }
+  return llvm::make_error<UnsupportedFeature>("DXIL: geometry shader input " + e.name + " isn't a vertex shader output");
+}
+
 llvm::Value *
 Lowering::RegisterElementPointer(dxbc::register_file &file, const SignatureElement &e, llvm::Value *row, uint32_t col) {
   auto array_ty = llvm::cast<llvm::PointerType>(file.ptr_int4->getType())->getNonOpaquePointerElementType();
@@ -245,8 +270,16 @@ Lowering::LowerOther(uint32_t opcode, llvm::CallInst *call) {
       Replace(call, Cast(v, call->getType()));
       return llvm::Error::success();
     }
-    auto word = ir.CreateLoad(ir.getInt32Ty(), RegisterElementPointer(res.input, *e, call->getArgOperand(2),
-                                                                     ConstantU32(call->getArgOperand(3))));
+    llvm::Value *ptr;
+    if (entry.kind == ShaderKind::Geometry) {
+      auto p = VertexOutputPointer(*e, call->getArgOperand(2), ConstantU32(call->getArgOperand(3)), call->getArgOperand(4));
+      if (!p)
+        return p.takeError();
+      ptr = *p;
+    } else {
+      ptr = RegisterElementPointer(res.input, *e, call->getArgOperand(2), ConstantU32(call->getArgOperand(3)));
+    }
+    auto word = ir.CreateLoad(ir.getInt32Ty(), ptr);
     auto ty = call->getType();
     Replace(call, ty->isIntegerTy(1) ? ir.CreateICmpNE(word, ir.getInt32(0)) : Cast(word, ty));
     return llvm::Error::success();
@@ -295,9 +328,28 @@ Lowering::LowerOther(uint32_t opcode, llvm::CallInst *call) {
   case op::DerivFineY:
     Replace(call, air.CreateDerivative(call->getArgOperand(1), opcode == op::DerivCoarseY || opcode == op::DerivFineY));
     return llvm::Error::success();
+  case op::PrimitiveID:
+    if (entry.kind != ShaderKind::Geometry)
+      goto unpacked_system_value;
+    Replace(call, res.patch_id); // the input primitive's index in the draw (dxbc_converter_gs.cpp)
+    return llvm::Error::success();
+  case op::GSInstanceID: // (100)
+    Replace(call, res.gs_instance_id);
+    return llvm::Error::success();
+  case op::EmitStream:        // (97, i8 stream): stream 0 only (initialization refuses others)
+  case op::CutStream:         // (98, i8 stream)
+  case op::EmitThenCutStream: // (99, i8 stream)
+    if (opcode != op::CutStream)
+      if (auto err = res.call_emit().build(ctx).takeError())
+        return err;
+    if (opcode != op::EmitStream)
+      if (auto err = res.call_cut().build(ctx).takeError())
+        return err;
+    Replace(call, nullptr);
+    return llvm::Error::success();
   case op::SampleIndex:
   case op::Coverage:
-  case op::PrimitiveID: {
+  unpacked_system_value: {
     auto kind = opcode == op::SampleIndex ? SemanticKind::SampleIndex
                 : opcode == op::Coverage  ? SemanticKind::Coverage
                                           : SemanticKind::PrimitiveID;

@@ -93,6 +93,23 @@ IREffect InitShifted(uint32_t arg_index, uint32_t reg, uint32_t col, uint32_t co
   });
 }
 
+// Geometry shader output (a mesh vertex): register `reg`'s components [col, col + cols) as the varying's x, y, ...
+IREffect MeshPopShifted(uint32_t reg, uint32_t col, uint32_t cols, uint32_t index, pvalue vertex,
+                        air::MSLScalerOrVectorType type) {
+  return make_effect([=](struct context ctx) {
+    auto &b = ctx.builder;
+    auto array = ctx.resource.output.ptr_int4;
+    auto array_ty = llvm::cast<llvm::PointerType>(array->getType())->getNonOpaquePointerElementType();
+    auto row = b.CreateLoad(ctx.types._int4, b.CreateGEP(array_ty, array, {b.getInt32(0), b.getInt32(reg)}));
+    int idx[4];
+    for (uint32_t i = 0; i < 4; i++)
+      idx[i] = (int)(i < cols ? col + i : col);
+    auto value = b.CreateBitCast(b.CreateShuffleVector(row, idx), air::get_llvm_type(type, ctx.llvm));
+    ctx.air.CreateSetMeshVertexData(vertex, index, value);
+    return std::monostate{};
+  });
+}
+
 // Defines a function input and, in the prologue, stores the argument into one of io_binding_map's special registers
 // (as handle_signature_cs does in dxbc_signature.cpp).
 template <typename Input>
@@ -339,6 +356,48 @@ AddPixelHandlers(const EntryInfo &entry, SM50ShaderInternal *shader, std::map<ui
   return llvm::Error::success();
 }
 
+// Geometry shader: outputs become the mesh function's vertex and primitive outputs, written at each emit
+// (dxbc_converter_gs.cpp); inputs come from the vertex stage's registers in the payload (LowerOther's loadInput).
+llvm::Error
+AddGeometryHandlers(const EntryInfo &entry, SM50ShaderInternal *shader) {
+  auto &fs = shader->func_signature;
+  auto &mesh = shader->mesh_output_handlers;
+  for (auto &e : entry.inputs) // in registers: relinked to the vertex outputs; unpacked: only these two IDs
+    if (e.start_row < 0 && e.kind != SemanticKind::PrimitiveID && e.kind != SemanticKind::GSInstanceID)
+      return Unsupported("geometry shader input " + e.name);
+  for (auto &e : entry.outputs) {
+    uint32_t reg = e.start_row, mask = Mask(e);
+    switch (e.kind) {
+    case SemanticKind::Position:
+      fs.DefineMeshVertexOutput(air::OutputPosition{.type = air::msl_float4});
+      mesh.push_back([=](MeshOutputContext &out) { return pop_mesh_output_position(reg, mask, out.vertex_id); });
+      break;
+    case SemanticKind::RenderTargetArrayIndex:
+      fs.DefineMeshPrimitiveOutput(air::OutputRenderTargetArrayIndex{});
+      mesh.push_back([=](MeshOutputContext &out) {
+        return pop_mesh_output_render_target_array_index(reg, mask, out.primitive_id);
+      });
+      break;
+    case SemanticKind::ViewPortArrayIndex:
+      fs.DefineMeshPrimitiveOutput(air::OutputViewportArrayIndex{});
+      mesh.push_back([=](MeshOutputContext &out) { return pop_mesh_output_viewport_array_index(reg, mask, out.primitive_id); });
+      break;
+    case SemanticKind::Arbitrary:
+      for (uint32_t r = 0; r < e.rows; r++) {
+        auto v = Varying(e, r);
+        uint32_t index = shader->num_mesh_vertex_data++, col = e.start_col, cols = e.cols;
+        fs.DefineMeshVertexOutput(air::OutputMeshData{.user = v.user, .type = v.type, .index = index});
+        mesh.push_back([=](MeshOutputContext &out) { return MeshPopShifted(reg + r, col, cols, index, out.vertex_id, v.type); });
+      }
+      break;
+    default:
+      return Unsupported("geometry shader output " + e.name);
+    }
+    Grow(shader->max_output_register, e);
+  }
+  return llvm::Error::success();
+}
+
 } // namespace
 
 air::OutputVertex Varying(const SignatureElement &e, uint32_t row) {
@@ -364,6 +423,7 @@ AddSignatureHandlers(const EntryInfo &entry, const llvm::Module &module, SM50Sha
   case ShaderKind::Compute: return AddComputeHandlers(module, shader);
   case ShaderKind::Vertex: return AddVertexHandlers(entry, shader, unpacked_inputs);
   case ShaderKind::Pixel: return AddPixelHandlers(entry, shader, unpacked_inputs);
+  case ShaderKind::Geometry: return AddGeometryHandlers(entry, shader);
   default: return Unsupported("this shader stage");
   }
 }

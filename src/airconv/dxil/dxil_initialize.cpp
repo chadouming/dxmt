@@ -153,7 +153,16 @@ InitializeDXIL(const Container &container, SM50ShaderInternal *shader, MTL_SHADE
   case ShaderKind::Vertex: shader->shader_type = microsoft::D3D10_SB_VERTEX_SHADER; break;
   case ShaderKind::Pixel: shader->shader_type = microsoft::D3D10_SB_PIXEL_SHADER; break;
   case ShaderKind::Compute: shader->shader_type = microsoft::D3D11_SB_COMPUTE_SHADER; break;
-  default: return llvm::make_error<UnsupportedFeature>("DXIL: only vertex, pixel and compute shaders are supported");
+  case ShaderKind::Geometry:
+    if (entry->gs_stream_mask != 1) // streams other than 0 only feed stream output, which DXMT lacks
+      return llvm::make_error<UnsupportedFeature>("DXIL: geometry shader streams other than 0 not supported");
+    shader->shader_type = microsoft::D3D10_SB_GEOMETRY_SHADER;
+    shader->gs_input_primitive = (microsoft::D3D10_SB_PRIMITIVE)entry->gs_input_primitive;
+    shader->gs_output_topology = (microsoft::D3D10_SB_PRIMITIVE_TOPOLOGY)entry->gs_output_topology;
+    shader->gs_max_vertex_output = entry->gs_max_vertex_count;
+    shader->gs_instance_count = entry->gs_instances;
+    break;
+  default: return llvm::make_error<UnsupportedFeature>("DXIL: only vertex, pixel, geometry and compute shaders are supported");
   }
   FillResourceMaps(*entry, **module, shader->shader_info);
   std::map<uint32_t, uint32_t> unpacked_inputs;
@@ -178,6 +187,10 @@ InitializeDXIL(const Container &container, SM50ShaderInternal *shader, MTL_SHADE
     refl->ArgumentBufferBindIndex = ~0u;
     if (shader->shader_type == microsoft::D3D11_SB_COMPUTE_SHADER)
       std::copy(shader->threadgroup_size, shader->threadgroup_size + 3, refl->ThreadgroupSize);
+    if (shader->shader_type == microsoft::D3D10_SB_GEOMETRY_SHADER) {
+      refl->GeometryShader.GSPassThrough = ~0u; // never a pass-through: always the mesh pipeline
+      refl->GeometryShader.Primitive = shader->gs_input_primitive;
+    }
     if (shader->shader_type == microsoft::D3D10_SB_PIXEL_SHADER) {
       refl->PixelShader.ValidRenderTargets = shader->pso_valid_output_reg_mask;
       refl->PixelShader.HasCoverageOutput = shader->ps_has_coverage_output;

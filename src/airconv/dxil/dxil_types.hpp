@@ -60,7 +60,7 @@ enum : uint32_t {
   ThreadIdInGroup = 95, FlattenedThreadIdInGroup = 96, MakeDouble = 101, SplitDouble = 102, PrimitiveID = 108,
   WaveIsFirstLane = 110, WaveGetLaneIndex = 111, WaveGetLaneCount = 112, WaveAnyTrue = 113, WaveAllTrue = 114,
   WaveActiveAllEqual = 115, WaveActiveBallot = 116, WaveReadLaneAt = 117, WaveReadLaneFirst = 118, WaveActiveOp = 119,
-  WaveActiveBit = 120, WavePrefixOp = 121, QuadReadLaneAt = 122, QuadOp = 123, BitcastI16toF16 = 124, BitcastF16toI16 = 125, BitcastI32toF32 = 126,
+  EmitStream = 97, CutStream = 98, EmitThenCutStream = 99, GSInstanceID = 100, WaveActiveBit = 120, WavePrefixOp = 121, QuadReadLaneAt = 122, QuadOp = 123, BitcastI16toF16 = 124, BitcastF16toI16 = 125, BitcastI32toF32 = 126,
   BitcastF32toI32 = 127, LegacyF32ToF16 = 130, LegacyF16ToF32 = 131, WaveAllBitCount = 135, WavePrefixBitCount = 136,
   RawBufferLoad = 139, RawBufferStore = 140, Dot2AddHalf = 162, Dot4AddI8Packed = 163, Dot4AddU8Packed = 164,
   AnnotateHandle = 216, CreateHandleFromBinding = 217, CreateHandleFromHeap = 218, Unpack4x8 = 219, Pack4x8 = 220,
@@ -96,6 +96,8 @@ struct EntryInfo {
   uint32_t sm_major = 0, sm_minor = 0;
   std::string name;
   uint32_t numthreads[3] = {0, 0, 0};
+  // Geometry shaders (entry property GSState): primitive and topology values are D3D10_SB_PRIMITIVE(_TOPOLOGY)'s.
+  uint32_t gs_input_primitive = 0, gs_max_vertex_count = 0, gs_stream_mask = 0, gs_output_topology = 0, gs_instances = 1;
   std::vector<SignatureElement> inputs, outputs;
   std::vector<Resource> resources; // all four classes
 

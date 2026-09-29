@@ -103,21 +103,82 @@ llvm::Error MoveConstantsToConstantSpace(llvm::Module &module) {
   return llvm::Error::success();
 }
 
+// The shader's module, set up for AIR, and its DXIL entry function (renamed: the caller may ask for its name, "main").
+llvm::Expected<std::pair<std::unique_ptr<llvm::Module>, llvm::Function *>>
+Load(const DXILShader &dxil, llvm::LLVMContext &context) {
+  auto loaded = LoadModule(context, dxil.bitcode.data(), dxil.bitcode.size());
+  if (!loaded)
+    return loaded.takeError();
+  std::unique_ptr<llvm::Module> module = std::move(*loaded);
+  llvm::Function *dxil_main = module->getFunction(dxil.entry.name);
+  if (!dxil_main)
+    return llvm::make_error<UnsupportedFeature>("DXIL: entry function missing");
+  dxil_main->setName("dxil.entry");
+  initializeModule(*module); // AIR triple, data layout, SDK version, module flags
+  return std::make_pair(std::move(module), dxil_main);
+}
+
+// Moves the DXIL entry's blocks to the end of the function being built, turns its returns into branches to
+// `epilogue`, lowers every dx.op call, and returns the block that enters the body. The insertion point is kept (the
+// caller branches to the body from where its prologue ended; the prologue may have added blocks, e.g. vertex pulls).
+llvm::Expected<llvm::BasicBlock *>
+LowerBody(const DXILShader &dxil, struct context &ctx, llvm::Function *dxil_main, llvm::BasicBlock *epilogue,
+          const EntryInfo *vertex_outputs = nullptr) {
+  auto ip = ctx.builder.saveIP();
+  auto body = &dxil_main->getEntryBlock();
+  std::vector<llvm::BasicBlock *> blocks;
+  for (auto &bb : *dxil_main)
+    blocks.push_back(&bb);
+  ctx.function->getBasicBlockList().splice(ctx.function->end(), dxil_main->getBasicBlockList());
+  std::vector<llvm::CallInst *> calls; // collected first: lowering erases them
+  for (auto *bb : blocks) {
+    if (auto ret = llvm::dyn_cast_or_null<llvm::ReturnInst>(bb->getTerminator())) {
+      llvm::BranchInst::Create(epilogue, ret);
+      ret->eraseFromParent();
+    }
+    for (auto &inst : *bb)
+      if (auto call = llvm::dyn_cast<llvm::CallInst>(&inst); call && OpCode(*call) != ~0u)
+        calls.push_back(call);
+  }
+  Lowering lowering(dxil, ctx, vertex_outputs);
+  for (auto *call : calls)
+    if (auto err = lowering.Lower(call))
+      return std::move(err);
+  lowering.Cleanup(*ctx.function);
+  ctx.builder.restoreIP(ip);
+  return body;
+}
+
+// Removes what's left of DXIL once the AIR function is built, and checks the module.
+llvm::Error Finish(llvm::Module &module, llvm::Function *dxil_main) {
+  dxil_main->eraseFromParent();
+  for (auto it = module.begin(); it != module.end();) {
+    auto &fn = *it++;
+    if (fn.getName().startswith("dx.op.") && fn.use_empty())
+      fn.eraseFromParent();
+  }
+  if (auto err = MoveConstantsToConstantSpace(module))
+    return err;
+  StripDXIL(module);
+  std::string problems;
+  llvm::raw_string_ostream os(problems);
+  if (llvm::verifyModule(module, &os))
+    return llvm::make_error<UnsupportedFeature>("DXIL: invalid module after lowering: " + os.str());
+  return llvm::Error::success();
+}
+
 } // namespace
 
 llvm::Expected<std::unique_ptr<llvm::Module>>
 ConvertDXIL(SM50ShaderInternal *shader, const char *name, llvm::LLVMContext &context, SM50_SHADER_COMPILATION_ARGUMENT_DATA *pArgs) {
   auto &dxil = *shader->dxil;
   auto &entry = dxil.entry;
-  auto loaded = LoadModule(context, dxil.bitcode.data(), dxil.bitcode.size());
+  if (entry.kind == ShaderKind::Geometry)
+    return llvm::make_error<UnsupportedFeature>("DXIL: a geometry shader compiles only with its vertex shader");
+  auto loaded = Load(dxil, context);
   if (!loaded)
     return loaded.takeError();
-  std::unique_ptr<llvm::Module> module = std::move(*loaded);
-  llvm::Function *dxil_main = module->getFunction(entry.name);
-  if (!dxil_main)
-    return llvm::make_error<UnsupportedFeature>("DXIL: entry function missing");
-  dxil_main->setName("dxil.entry"); // frees its name: the caller may ask for the same one (e.g. "main")
-  initializeModule(*module); // AIR triple, data layout, SDK version, module flags
+  auto [module, dxil_main] = std::move(*loaded);
 
   // From here on, as convert_dxbc_compute_shader (dxbc_converter.cpp), except that the body comes from DXIL.
   auto func_signature = shader->func_signature; // copy
@@ -230,28 +291,10 @@ ConvertDXIL(SM50ShaderInternal *shader, const char *name, llvm::LLVMContext &con
   if (auto err = prologue.build(ctx).takeError())
     return std::move(err);
 
-  // The DXIL body: move its blocks to the end, enter them from where the prologue ended (it may have added blocks,
-  // e.g. pulling vertex inputs), and leave through `epilogue`.
-  auto body = &dxil_main->getEntryBlock();
-  function->getBasicBlockList().splice(function->end(), dxil_main->getBasicBlockList());
-  builder.CreateBr(body);
-  for (auto &bb : *function)
-    if (auto ret = llvm::dyn_cast_or_null<llvm::ReturnInst>(bb.getTerminator())) {
-      llvm::BranchInst::Create(epilogue_bb, ret);
-      ret->eraseFromParent();
-    }
-
-  // Lower every dx.op call (collected first: lowering erases them).
-  std::vector<llvm::CallInst *> calls;
-  for (auto &bb : *function)
-    for (auto &inst : bb)
-      if (auto call = llvm::dyn_cast<llvm::CallInst>(&inst); call && OpCode(*call) != ~0u)
-        calls.push_back(call);
-  Lowering lowering(dxil, ctx);
-  for (auto *call : calls)
-    if (auto err = lowering.Lower(call))
-      return std::move(err);
-  lowering.Cleanup(*function);
+  auto body = LowerBody(dxil, ctx, dxil_main, epilogue_bb);
+  if (!body)
+    return body.takeError();
+  builder.CreateBr(*body);
 
   builder.SetInsertPoint(epilogue_bb);
   auto result = epilogue.build(ctx);
@@ -262,21 +305,33 @@ ConvertDXIL(SM50ShaderInternal *shader, const char *name, llvm::LLVMContext &con
   else
     builder.CreateRetVoid();
 
-  dxil_main->eraseFromParent();
-  for (auto it = module->begin(); it != module->end();) {
-    auto &fn = *it++;
-    if (fn.getName().startswith("dx.op.") && fn.use_empty())
-      fn.eraseFromParent();
-  }
-  if (auto err = MoveConstantsToConstantSpace(*module))
-    return std::move(err);
-  StripDXIL(*module);
   module->getOrInsertNamedMetadata(vertex ? "air.vertex" : pixel ? "air.fragment" : "air.kernel")->addOperand(function_metadata);
+  if (auto err = Finish(*module, dxil_main))
+    return std::move(err);
+  return std::move(module);
+}
 
-  std::string problems;
-  llvm::raw_string_ostream os(problems);
-  if (llvm::verifyModule(*module, &os))
-    return llvm::make_error<UnsupportedFeature>("DXIL: invalid module after lowering: " + os.str());
+llvm::Expected<std::unique_ptr<llvm::Module>>
+ConvertDXILGeometryPipeline(bool object, SM50ShaderInternal *vs, SM50ShaderInternal *gs, const char *name,
+                            llvm::LLVMContext &context, SM50_SHADER_COMPILATION_ARGUMENT_DATA *pArgs) {
+  if (!vs->dxil || !gs->dxil || vs->dxil->entry.kind != ShaderKind::Vertex || gs->dxil->entry.kind != ShaderKind::Geometry)
+    return llvm::make_error<UnsupportedFeature>("DXIL: a geometry pipeline needs a DXIL vertex and geometry shader");
+  auto stage = object ? vs : gs;
+  auto loaded = Load(*stage->dxil, context);
+  if (!loaded)
+    return loaded.takeError();
+  auto module = std::move(loaded->first);
+  auto dxil_main = loaded->second;
+  // The object function runs the vertex shader into the payload; the mesh function runs the geometry shader on it,
+  // whose inputs are relinked to the vertex shader's outputs by semantic (as the varyings between stages).
+  ShaderBody body = [&](struct context &ctx, llvm::BasicBlock *epilogue) {
+    return LowerBody(*stage->dxil, ctx, dxil_main, epilogue, object ? nullptr : &vs->dxil->entry);
+  };
+  if (auto err = object ? convert_dxbc_vertex_for_geometry_shader(vs, name, gs, context, *module, pArgs, body)
+                        : convert_dxbc_geometry_shader(gs, name, vs, context, *module, pArgs, body))
+    return std::move(err);
+  if (auto err = Finish(*module, dxil_main))
+    return std::move(err);
   return std::move(module);
 }
 

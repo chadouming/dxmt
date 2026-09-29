@@ -65,6 +65,13 @@ air::OutputVertex Varying(const SignatureElement &e, uint32_t row);
 // (0, 0, 0, 1) (dxil-translate puts a pixel shader in a Metal pipeline with it).
 llvm::Expected<std::unique_ptr<llvm::Module>> BuildPassThroughVertex(const EntryInfo &pixel, llvm::LLVMContext &context);
 
+// dxil_converter.cpp: SM50CompileGeometryPipelineVertex (object: the vertex shader as the object function) and
+// SM50CompileGeometryPipelineGeometry's (the geometry shader as the mesh function) DXIL branch.
+llvm::Expected<std::unique_ptr<llvm::Module>> ConvertDXILGeometryPipeline(
+    bool object, dxbc::SM50ShaderInternal *vs, dxbc::SM50ShaderInternal *gs, const char *name, llvm::LLVMContext &context,
+    SM50_SHADER_COMPILATION_ARGUMENT_DATA *pArgs
+);
+
 // dxil_converter.cpp: SM50Compile's DXIL branch; returns the AIR module, ready for airconv's passes.
 llvm::Expected<std::unique_ptr<llvm::Module>> ConvertDXIL(
     dxbc::SM50ShaderInternal *shader, const char *name, llvm::LLVMContext &context,
