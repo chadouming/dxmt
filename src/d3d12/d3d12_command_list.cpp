@@ -41,6 +41,30 @@ enum class DrawCallStatus {
   Ordinary,
 };
 
+// Geometry shader draws (MacNeutron), as DXMT's D3D11 GeometryDraw: object threadgroup size and the vertices each
+// threadgroup advances by, for the input topology ({0, 0}: not a geometry shader input); and whether it's a strip.
+inline std::pair<uint32_t, uint32_t>
+geometry_warp(D3D12_PRIMITIVE_TOPOLOGY topo) {
+  switch (topo) {
+  case D3D_PRIMITIVE_TOPOLOGY_POINTLIST:
+  case D3D_PRIMITIVE_TOPOLOGY_LINELIST:
+  case D3D_PRIMITIVE_TOPOLOGY_LINELIST_ADJ: return {32, 32};
+  case D3D_PRIMITIVE_TOPOLOGY_LINESTRIP: return {32, 31};
+  case D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST:
+  case D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST_ADJ: return {30, 30};
+  case D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP: return {32, 30};
+  case D3D_PRIMITIVE_TOPOLOGY_LINESTRIP_ADJ: return {32, 29};
+  case D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP_ADJ: return {32, 28};
+  default: return {0, 0};
+  }
+}
+
+inline bool
+is_strip_topology(D3D12_PRIMITIVE_TOPOLOGY topo) {
+  return topo == D3D_PRIMITIVE_TOPOLOGY_LINESTRIP || topo == D3D_PRIMITIVE_TOPOLOGY_LINESTRIP_ADJ ||
+         topo == D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP || topo == D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP_ADJ;
+}
+
 inline bool
 to_metal_primitive_type(D3D12_PRIMITIVE_TOPOLOGY topo, WMTPrimitiveType &primitive, uint32_t &control_point_num) {
   control_point_num = 0;
@@ -129,6 +153,10 @@ class MTLD3D12GraphicsCommandListImpl : public MTLD3D12DeviceChild<MTLD3D12Graph
   D3D12_CPU_DESCRIPTOR_HANDLE dsv;
 
   D3D12_PRIMITIVE_TOPOLOGY topology_;
+  // The render pipeline bound in the current encoder, and whether it's a geometry pipeline (its bindings go to the
+  // object and mesh stages instead of the vertex stage).
+  obj_handle_t bound_pso_ = 0;
+  bool bound_geometry_ = false;
 
   UINT num_viewports;
   D3D12_VIEWPORT
@@ -290,7 +318,7 @@ public:
   }
 
   DrawCallStatus
-  PreDraw(bool SkipResourceBinding = false) {
+  PreDraw(bool SkipResourceBinding = false, bool Indexed = false) {
     if (!allocator_->encoder_current || allocator_->encoder_current->type != EncoderType::Render) {
 
       allocator_->InvalidateCurrentPass();
@@ -366,10 +394,53 @@ public:
     if (!pso_graphics_)
       return DrawCallStatus::Invalid;
 
+    obj_handle_t pso = pso_graphics_->pso;
+    bool geometry = pso_graphics_->geometry;
+    if (geometry) {
+      auto format = !Indexed                           ? SM50_INDEX_BUFFER_FORMAT_NONE
+                    : index_type == WMTIndexTypeUInt32 ? SM50_INDEX_BUFFER_FORMAT_UINT32
+                                                       : SM50_INDEX_BUFFER_FORMAT_UINT16;
+      pso = pso_graphics_->GeometryPipeline(is_strip_topology(topology_), format);
+      if (!pso)
+        return DrawCallStatus::Invalid;
+      static_cast<RenderEncoderData *>(allocator_->encoder_current)->use_geometry = true;
+    }
+    if (geometry != bound_geometry_) {
+      dirty_state_.set(DirtyState::VertexBuffer, DirtyState::GraphicsRootArguments, DirtyState::GraphicsRootSignature);
+      bound_geometry_ = geometry;
+    }
+    if (pso != bound_pso_)
+      dirty_state_.set(DirtyState::GraphicsPipelineState);
+    // Heap buffer bindings: the vertex buffer table goes to the stage running the vertex shader (object for a geometry
+    // pipeline), root arguments and static samplers to every programmable stage.
+    auto bind = [&](uint8_t index, uint64_t offset, bool vertex_input) {
+      auto set = [&](WMTRenderCommandType type) {
+        auto &cmd = allocator_->EncodeRenderCommand<wmtcmd_render_setbuffer>();
+        cmd.type = type;
+        cmd.buffer = allocator_->gpu_heap_buffer_;
+        cmd.offset = offset;
+        cmd.index = index;
+      };
+      set(geometry ? WMTRenderCommandSetObjectBuffer : WMTRenderCommandSetVertexBuffer);
+      if (vertex_input)
+        return;
+      if (geometry)
+        set(WMTRenderCommandSetMeshBuffer);
+      set(WMTRenderCommandSetFragmentBuffer);
+    };
+
     if (dirty_state_.test(DirtyState::GraphicsPipelineState)) {
       auto &cmd_setpso = allocator_->EncodeRenderCommand<wmtcmd_render_setpso>();
       cmd_setpso.type = WMTRenderCommandSetPSO;
-      cmd_setpso.pso = pso_graphics_->pso;
+      cmd_setpso.pso = pso;
+      bound_pso_ = pso;
+      if (geometry) { // the draw commands only move the draw arguments' offset in the heap
+        auto &cmd = allocator_->EncodeRenderCommand<wmtcmd_render_setbuffer>();
+        cmd.type = WMTRenderCommandSetObjectBuffer;
+        cmd.buffer = allocator_->gpu_heap_buffer_;
+        cmd.offset = 0;
+        cmd.index = SM50_BINDING_INDEX_DRAW_ARGUMENTS;
+      }
 
       auto &cmd_setdsso = allocator_->EncodeRenderCommand<wmtcmd_render_setdepthstencilstate>();
       cmd_setdsso.type = WMTRenderCommandSetDepthStencilState;
@@ -392,46 +463,21 @@ public:
     }
     if (dirty_state_.test(DirtyState::VertexBuffer)) {
       auto [Offset, Stride] = PopulateVertexBufferTable(1);
-      if (Stride) {
-        auto &cmd_vsvb = allocator_->EncodeRenderCommand<wmtcmd_render_setbuffer>();
-        cmd_vsvb.type = WMTRenderCommandSetVertexBuffer;
-        cmd_vsvb.buffer = allocator_->gpu_heap_buffer_;
-        cmd_vsvb.offset = Offset;
-        cmd_vsvb.index = SM50_BINDING_INDEX_VERTEX_BUFFER;
-      }
+      if (Stride)
+        bind(SM50_BINDING_INDEX_VERTEX_BUFFER, Offset, true);
       dirty_state_.clr(DirtyState::VertexBuffer);
     }
 
     if (dirty_state_.test(DirtyState::GraphicsRootArguments) && !SkipResourceBinding) {
       if (rootsig_graphics_) {
-        auto Offset = EncodeRootArgument(rootsig_graphics_.ptr(), rootarg_graphics_staging_);
-        auto &cmd_vsargbuf = allocator_->EncodeRenderCommand<wmtcmd_render_setbuffer>();
-        cmd_vsargbuf.type = WMTRenderCommandSetVertexBuffer;
-        cmd_vsargbuf.buffer = allocator_->gpu_heap_buffer_;
-        cmd_vsargbuf.offset = Offset;
-        cmd_vsargbuf.index = SM50_BINDING_INDEX_ROOT_ARGUMENTS;
-        auto &cmd_fsargbuf = allocator_->EncodeRenderCommand<wmtcmd_render_setbuffer>();
-        cmd_fsargbuf.type = WMTRenderCommandSetFragmentBuffer;
-        cmd_fsargbuf.buffer = allocator_->gpu_heap_buffer_;
-        cmd_fsargbuf.offset = Offset;
-        cmd_fsargbuf.index = SM50_BINDING_INDEX_ROOT_ARGUMENTS;
+        bind(SM50_BINDING_INDEX_ROOT_ARGUMENTS, EncodeRootArgument(rootsig_graphics_.ptr(), rootarg_graphics_staging_), false);
       }
       dirty_state_.clr(DirtyState::GraphicsRootArguments);
     }
 
     if (dirty_state_.test(DirtyState::GraphicsRootSignature) && !SkipResourceBinding) {
       if (rootsig_graphics_) {
-        auto Offset = EncodeStaticSamplers(rootsig_graphics_.ptr());
-        auto &cmd_vsargbuf = allocator_->EncodeRenderCommand<wmtcmd_render_setbuffer>();
-        cmd_vsargbuf.type = WMTRenderCommandSetVertexBuffer;
-        cmd_vsargbuf.buffer = allocator_->gpu_heap_buffer_;
-        cmd_vsargbuf.offset = Offset;
-        cmd_vsargbuf.index = SM50_BINDING_INDEX_STATIC_SAMPLERS;
-        auto &cmd_fsargbuf = allocator_->EncodeRenderCommand<wmtcmd_render_setbuffer>();
-        cmd_fsargbuf.type = WMTRenderCommandSetFragmentBuffer;
-        cmd_fsargbuf.buffer = allocator_->gpu_heap_buffer_;
-        cmd_fsargbuf.offset = Offset;
-        cmd_fsargbuf.index = SM50_BINDING_INDEX_STATIC_SAMPLERS;
+        bind(SM50_BINDING_INDEX_STATIC_SAMPLERS, EncodeStaticSamplers(rootsig_graphics_.ptr()), false);
       }
       dirty_state_.clr(DirtyState::GraphicsRootSignature);
     }
@@ -500,6 +546,20 @@ public:
     DrawCallStatus status = PreDraw();
     if (status == DrawCallStatus::Invalid)
       return;
+    if (pso_graphics_->geometry) {
+      auto [vertex_per_warp, increment] = geometry_warp(topology_);
+      if (!VertexCountPerInstance || !InstanceCount || !increment)
+        return;
+      auto [args, offset] = allocator_->AllocateGPUHeap(sizeof(D3D12_DRAW_ARGUMENTS), 32);
+      *(D3D12_DRAW_ARGUMENTS *)args = {VertexCountPerInstance, InstanceCount, StartVertexLocation, StartInstanceLocation};
+      auto &cmd = allocator_->EncodeRenderCommand<wmtcmd_render_dxmt_geometry_draw>();
+      cmd.type = WMTRenderCommandDXMTGeometryDraw;
+      cmd.draw_arguments_offset = offset;
+      cmd.warp_count = (VertexCountPerInstance - 1) / increment + 1;
+      cmd.instance_count = InstanceCount;
+      cmd.vertex_per_warp = vertex_per_warp;
+      return;
+    }
 
     auto &cmd_draw = allocator_->EncodeRenderCommand<wmtcmd_render_draw>();
     cmd_draw.type = WMTRenderCommandDraw;
@@ -519,9 +579,26 @@ public:
     uint32_t cp_count;
     if (!to_metal_primitive_type(topology_, primitive_type, cp_count))
       return;
-    DrawCallStatus status = PreDraw();
+    DrawCallStatus status = PreDraw(false, true);
     if (status == DrawCallStatus::Invalid)
       return;
+    if (pso_graphics_->geometry) { // the object function reads the index buffer from StartIndex (the arguments)
+      auto [vertex_per_warp, increment] = geometry_warp(topology_);
+      if (!IndexCountPerInstance || !InstanceCount || !increment)
+        return;
+      auto [args, offset] = allocator_->AllocateGPUHeap(sizeof(D3D12_DRAW_INDEXED_ARGUMENTS), 32);
+      *(D3D12_DRAW_INDEXED_ARGUMENTS *)args = {IndexCountPerInstance, InstanceCount, StartVertexLocation, BaseVertexLocation,
+                                               StartInstanceLocation};
+      auto &cmd = allocator_->EncodeRenderCommand<wmtcmd_render_dxmt_geometry_draw_indexed>();
+      cmd.type = WMTRenderCommandDXMTGeometryDrawIndexed;
+      cmd.draw_arguments_offset = offset;
+      cmd.index_buffer = index_buffer;
+      cmd.index_buffer_offset = index_offset;
+      cmd.warp_count = (IndexCountPerInstance - 1) / increment + 1;
+      cmd.instance_count = InstanceCount;
+      cmd.vertex_per_warp = vertex_per_warp;
+      return;
+    }
     auto &cmd_draw = allocator_->EncodeRenderCommand<wmtcmd_render_draw_indexed>();
     cmd_draw.type = WMTRenderCommandDrawIndexed;
     cmd_draw.primitive_type = primitive_type;
@@ -1464,6 +1541,10 @@ public:
       if (!count_buffer->buffer)
         return;
       CountBufferAddress = count_buffer->buffer->current()->gpuAddress() + CountBufferOffset;
+    }
+    if (sig->CommandType != D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH && pso_graphics_ && pso_graphics_->geometry) {
+      ERR("ExecuteIndirect: draws with a geometry shader not supported");
+      return;
     }
     if (sig->CommandType == D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH) {
       if (!PreDispatch(sig->UpdateRootArguments))

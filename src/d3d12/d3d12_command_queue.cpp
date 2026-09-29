@@ -296,7 +296,8 @@ public:
             render_pass_info.render_target_height = data->render_target_height;
           }
           auto encoder = cmdbuf.renderCommandEncoder(render_pass_info);
-          encoder.waitForFence(fence_, WMTRenderStageVertex);
+          // Geometry shader draws (MacNeutron) read resources in the object and mesh stages too.
+          encoder.waitForFence(fence_, data->use_geometry ? WMTRenderStagePreRaster : WMTRenderStageVertex);
           encoder.encodeCommands(&data->cmd_head);
           encoder.updateFence(fence_, WMTRenderStageFragment);
           encoder.endEncoding();

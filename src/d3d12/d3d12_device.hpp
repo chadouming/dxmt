@@ -146,6 +146,11 @@ public:
   float scole_scale;
   float depth_bias_clamp;
   uint32_t forced_sample_count;
+  // MacNeutron: a geometry shader pipeline is DXMT's mesh emulation (as its D3D11 side: the vertex shader as the object
+  // function, the geometry shader as the mesh function); `pso` stays empty and GeometryPipeline gives the variant for a
+  // draw's strip topology and index format, made on first use (0 if it can't be).
+  bool geometry = false;
+  virtual obj_handle_t GeometryPipeline(bool strip, SM50_INDEX_BUFFER_FORMAT index_format) { return 0; }
 
   virtual WMT::DepthStencilState GetDepthStencilState(UINT DSVPlanar, UINT DSVReadonlyFlags) = 0;
 
