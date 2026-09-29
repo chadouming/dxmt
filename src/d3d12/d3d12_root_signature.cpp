@@ -21,6 +21,7 @@
 #include "com/com_object.hpp"
 #include "com/com_pointer.hpp"
 #include "d3d12_device.hpp"
+#include "d3d12_dxil_dump.hpp"
 #include "d3d12_device_child.hpp"
 #include "dxmt_sampler.hpp"
 #include "util_math.hpp"
@@ -496,6 +497,7 @@ CreateRootSignature(
 ) {
   InitReturnPtr(ppRootSignature);
 
+  DumpRootSignature(pBytecode, BytecodeLength);
   auto root_sig = Com(new MTLD3D12RootSignatureImpl(pDevice, pBytecode, BytecodeLength));
   HRESULT hr = root_sig->Initialize();
   if (FAILED(hr))

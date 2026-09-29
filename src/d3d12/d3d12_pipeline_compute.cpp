@@ -38,6 +38,8 @@ public:
   HRESULT
   Initialize(const D3D12_COMPUTE_PIPELINE_STATE_DESC *pDesc) {
     DumpDXIL(pDesc->CS);
+    if (DXILCaptureMode())
+      LogPipeline("cs" + CapturedShader("cs", pDesc->CS) + CapturedRootSignature(pDesc->pRootSignature));
 
     SM50Shader shader_cs;
     SM50Error sm50_err;

@@ -645,6 +645,15 @@ public:
   Initialize(const D3D12_GRAPHICS_PIPELINE_STATE_DESC *pDesc) {
     for (auto *shader : {&pDesc->VS, &pDesc->PS, &pDesc->GS, &pDesc->HS, &pDesc->DS})
       DumpDXIL(*shader);
+    if (DXILCaptureMode()) {
+      std::string line = "gfx" + CapturedShader("vs", pDesc->VS) + CapturedShader("ps", pDesc->PS) +
+                         CapturedShader("gs", pDesc->GS) + CapturedRootSignature(pDesc->pRootSignature) + " rtv=";
+      for (unsigned i = 0; i < pDesc->NumRenderTargets; i++)
+        line += std::to_string(pDesc->RTVFormats[i]) + (i + 1 < pDesc->NumRenderTargets ? "," : "");
+      line += " dsv=" + std::to_string(pDesc->DSVFormat) + " topology=" + std::to_string(pDesc->PrimitiveTopologyType) +
+              " samples=" + std::to_string(pDesc->SampleDesc.Count);
+      LogPipeline(line);
+    }
 
     if (pDesc->StreamOutput.NumEntries) {
       ERR("CreatePipelineState: SO not supported");

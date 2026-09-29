@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <mutex>
 #include <string>
 
 namespace dxmt {
@@ -56,20 +57,20 @@ bool DXILCaptureMode() {
   return !CaptureFolder().empty();
 }
 
-void DumpDXIL(const D3D12_SHADER_BYTECODE &Bytecode) {
-  const std::wstring &folder = CaptureFolder();
-  if (folder.empty() || !Bytecode.pShaderBytecode)
-    return;
-  auto blob = static_cast<const uint8_t *>(Bytecode.pShaderBytecode);
-  const char *stage = DXILStage(blob, Bytecode.BytecodeLength);
-  if (!stage)
-    return;
+uint64_t CaptureHash(const void *data, size_t size) {
+  auto bytes = static_cast<const uint8_t *>(data);
   uint64_t hash = 0xcbf29ce484222325ull;
-  for (size_t i = 0; i < Bytecode.BytecodeLength; i++)
-    hash = (hash ^ blob[i]) * 0x100000001b3ull;
-  char name[64];
-  snprintf(name, sizeof(name), "\\%s-%016llx.dxil", stage, (unsigned long long)hash);
-  std::wstring path = folder + str::tows(name);
+  for (size_t i = 0; i < size; i++)
+    hash = (hash ^ bytes[i]) * 0x100000001b3ull;
+  return hash;
+}
+
+namespace {
+
+// Saves `blob` as <folder>\<name> once (see DumpDXIL).
+void SaveOnce(const char *name, const void *blob, size_t size) {
+  const std::wstring &folder = CaptureFolder();
+  std::wstring path = folder + L"\\" + str::tows(name);
   if (GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES)
     return; // captured before
   // Written under a temporary name and renamed, so a capture cut short (a killed game) never takes the final name.
@@ -79,12 +80,64 @@ void DumpDXIL(const D3D12_SHADER_BYTECODE &Bytecode) {
   if (file == INVALID_HANDLE_VALUE)
     return;
   DWORD written = 0;
-  bool ok = WriteFile(file, blob, (DWORD)Bytecode.BytecodeLength, &written, nullptr) &&
-            written == Bytecode.BytecodeLength;
+  bool ok = WriteFile(file, blob, (DWORD)size, &written, nullptr) && written == size;
   CloseHandle(file);
   // MoveFileW fails if another thread captured the same shader meanwhile: that capture is kept.
   if (!ok || !MoveFileW(temp.c_str(), path.c_str()))
     DeleteFileW(temp.c_str());
+}
+
+} // namespace
+
+void DumpDXIL(const D3D12_SHADER_BYTECODE &Bytecode) {
+  if (CaptureFolder().empty() || !Bytecode.pShaderBytecode)
+    return;
+  auto blob = static_cast<const uint8_t *>(Bytecode.pShaderBytecode);
+  const char *stage = DXILStage(blob, Bytecode.BytecodeLength);
+  if (!stage)
+    return;
+  char name[64];
+  snprintf(name, sizeof(name), "%s-%016llx.dxil", stage, (unsigned long long)CaptureHash(blob, Bytecode.BytecodeLength));
+  SaveOnce(name, blob, Bytecode.BytecodeLength);
+}
+
+void DumpRootSignature(const void *blob, size_t size) {
+  if (CaptureFolder().empty() || !blob)
+    return;
+  char name[64];
+  snprintf(name, sizeof(name), "rs-%016llx.bin", (unsigned long long)CaptureHash(blob, size));
+  SaveOnce(name, blob, size);
+}
+
+void SaveCapture(const char *name, const void *data, size_t size) {
+  const std::wstring &folder = CaptureFolder();
+  if (folder.empty())
+    return;
+  std::wstring path = folder + L"\\" + str::tows(name), temp = path + L".tmp";
+  HANDLE file = CreateFileW(temp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file == INVALID_HANDLE_VALUE)
+    return;
+  DWORD written = 0;
+  bool ok = WriteFile(file, data, (DWORD)size, &written, nullptr) && written == size;
+  CloseHandle(file);
+  if (!ok || !MoveFileExW(temp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING))
+    DeleteFileW(temp.c_str());
+}
+
+void LogPipeline(const std::string &line) {
+  const std::wstring &folder = CaptureFolder();
+  if (folder.empty())
+    return;
+  static std::mutex mutex;
+  std::lock_guard<std::mutex> lock(mutex);
+  std::wstring path = folder + L"\\pipelines.txt";
+  HANDLE file = CreateFileW(path.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file == INVALID_HANDLE_VALUE)
+    return;
+  std::string text = line + "\n";
+  DWORD written = 0;
+  WriteFile(file, text.data(), (DWORD)text.size(), &written, nullptr);
+  CloseHandle(file);
 }
 
 } // namespace dxmt

@@ -23,6 +23,11 @@
 #include "dxgi_interfaces.h"
 #include "log/log.hpp"
 #include "util_env.hpp"
+#include "dxmt_capture.hpp"
+#include "dxmt_format.hpp"
+#include "d3d12_dxil_dump.hpp"
+#include <ctime>
+#include <mutex>
 #include <atomic>
 #include "d3d10_1.h"
 #include "d3d11_4.h"
@@ -41,6 +46,134 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
 
   WMT::Reference<WMT::CommandQueue> queue_;
   WMT::Reference<WMT::Fence> fence_;
+
+  // Metal frame capture (MacNeutron; as DXMT's D3D11 queue: MTL_CAPTURE_ENABLED=1 and DXMT_CAPTURE_EXECUTABLE=<exe>,
+  // then F10 or DXMT_CAPTURE_FRAME=<n>). Frames are counted by presents.
+  CaptureState capture_state_;
+  uint64_t presented_frames_ = 0;
+
+  // Pass dump (MacNeutron capture mode, DXMT_DXIL_DUMP=<folder>): with DXMT_DUMP_FRAME=<n>, frame n's render pass
+  // attachments, copied into shared buffers and saved as pass-<index>-<attachment>-<width>x<height>-<pixel format>.raw
+  // eight frames later, with passes.txt listing every pass of the frame (and its queue). For finding which pass renders
+  // wrong. DXMT_DUMP_FRAME=F9 dumps the frame after each press of F9 instead, over the previous dump. Shared by the
+  // queues and counted by any queue's presents: Unreal presents through AMD's FSR 3 proxy, from the proxy's own queue.
+  struct PassDump {
+    WMT::Reference<WMT::Buffer> buffer;
+    WMTBufferInfo info;
+    std::string name;
+  };
+  struct PassDumps {
+    std::mutex mutex;
+    std::atomic_uint64_t frames = 0;
+    std::atomic_uint64_t frame = ~0ull;
+    bool on_key = false;
+    uint32_t passes = 0, queues = 0;
+    uint64_t bytes = 0;
+    std::vector<PassDump> dumps;
+    std::string log;
+
+    PassDumps() {
+      auto value = env::getEnvVar("DXMT_DUMP_FRAME");
+      if (value.empty() || !DXILCaptureMode())
+        return;
+      on_key = value == "F9";
+      try {
+        frame = std::stoull(value);
+      } catch (const std::invalid_argument &) {
+      }
+    }
+  };
+  static PassDumps &
+  Dumps() {
+    static PassDumps dumps;
+    return dumps;
+  }
+  uint32_t queue_index_ = Dumps().queues++;
+
+  void
+  DumpAttachment(WMT::CommandBuffer &cmdbuf, const std::string &name, const TextureViewRef &view, uint32_t level,
+                 uint32_t slice, uint32_t depth_plane, WMTBlitOption option) {
+    auto &d = Dumps();
+    auto texture = view.texture();
+    auto format = texture.pixelFormat();
+    uint64_t width = std::max<uint64_t>(1, texture.width() >> level), height = std::max<uint64_t>(1, texture.height() >> level);
+    uint32_t texel = option ? 4 : MTLGetTexelSize(format);
+    uint32_t samples = view->allocation && view->allocation->descriptor ? view->allocation->descriptor->sampleCount() : 1;
+    std::string file = name + "-" + std::to_string(width) + "x" + std::to_string(height) + "-" + std::to_string(format);
+    d.log += " " + file + (samples > 1 ? "-msaa" : "") + "@" + std::to_string(view->allocation ? (uint64_t)view->allocation->texture().handle : 0);
+    uint64_t size = width * height * texel;
+    // ponytail: 3 GB cap, so a dump never exhausts memory; raise it for a bigger frame
+    if (!texel || samples > 1 || d.bytes + size > (3ull << 30))
+      return;
+    PassDump dump;
+    dump.info.length = size;
+    dump.info.options = WMTResourceStorageModeShared;
+    dump.info.memory.set(0);
+    dump.buffer = device_->GetMTLDevice().newBuffer(dump.info);
+    if (!dump.buffer || !dump.info.memory.get_accessible_or_null())
+      return;
+    struct wmtcmd_blit_copy_from_texture_to_buffer_withblitoption cmd = {};
+    cmd.type = WMTBlitCommandCopyFromTextureToBufferWithBlitOption;
+    cmd.next.set(nullptr);
+    cmd.src = texture.handle;
+    cmd.slice = slice;
+    cmd.level = level;
+    cmd.origin = {0, 0, depth_plane};
+    cmd.size = {width, height, 1};
+    cmd.dst = dump.buffer.handle;
+    cmd.offset = 0;
+    cmd.bytes_per_row = width * texel;
+    cmd.bytes_per_image = size;
+    cmd.options = option;
+    auto blit = cmdbuf.blitCommandEncoder();
+    blit.waitForFence(fence_);
+    blit.encodeCommands((const wmtcmd_blit_nop *)&cmd);
+    blit.updateFence(fence_);
+    blit.endEncoding();
+    dump.name = file + ".raw";
+    d.bytes += size;
+    d.dumps.push_back(std::move(dump));
+  }
+
+  void
+  DumpPass(WMT::CommandBuffer &cmdbuf, EncoderData *pass) {
+    auto &d = Dumps();
+    std::lock_guard<std::mutex> lock(d.mutex);
+    std::string name = "pass-" + std::to_string(d.passes++);
+    static const char *const kinds[] = {"null", "clear", "render", "blit", "compute", "resolve"};
+    d.log += name + " q" + std::to_string(queue_index_) + " " + ((unsigned)pass->type < 6 ? kinds[(unsigned)pass->type] : "other");
+    if (pass->type == EncoderType::Render) {
+      auto data = static_cast<RenderEncoderData *>(pass);
+      for (unsigned i = 0; i < data->colors.size(); i++) {
+        auto &c = data->colors[i];
+        if (c.attachment)
+          DumpAttachment(cmdbuf, name + "-c" + std::to_string(i), c.attachment, c.level, c.slice, c.depth_plane, WMTBlitOptionNone);
+      }
+      if (data->depth.attachment) {
+        auto format = data->depth.attachment.texture().pixelFormat();
+        DumpAttachment(cmdbuf, name + "-d", data->depth.attachment, data->depth.level, data->depth.slice, 0,
+                       format == WMTPixelFormatDepth32Float_Stencil8 ? WMTBlitOptionDepthFromDepthStencil : WMTBlitOptionNone);
+      }
+    }
+    d.log += "\n";
+  }
+
+  static void
+  SaveDumps() {
+    auto &d = Dumps();
+    std::lock_guard<std::mutex> lock(d.mutex);
+    if (d.log.empty())
+      return;
+    for (auto &dump : d.dumps)
+      SaveCapture(dump.name.c_str(), dump.info.memory.get_accessible_or_null(), dump.info.length);
+    SaveCapture("passes.txt", d.log.data(), d.log.size());
+    d.dumps.clear();
+    d.log.clear();
+    d.passes = 0;
+    d.bytes = 0;
+    if (d.on_key)
+      d.frame = ~0ull;
+  }
 
   std::atomic_uint64_t inflight_cmdbuf_seq_ = 1;
   std::atomic_uint64_t inflight_cmdbuf_count_ = 0;
@@ -118,13 +251,22 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
 public:
   MTLD3D12CommandQueueImpl(MTLD3D12Device *pDevice) :
       MTLD3D12Pageable<MTLD3D12CommandQueue, IMTLSwapChainFactory>(pDevice),
-      inflight_cmdbuf_wait_thread_([this]() { this->CommandBufferWaitingThread(); }) {}
+      inflight_cmdbuf_wait_thread_([this]() { this->CommandBufferWaitingThread(); }) {
+    auto frame = env::getEnvVar("DXMT_CAPTURE_FRAME");
+    if (!frame.empty()) {
+      try {
+        capture_state_.scheduleNextFrameCapture(std::stoull(frame));
+      } catch (const std::invalid_argument &) {
+      }
+    }
+  }
 
   ~MTLD3D12CommandQueueImpl() {
     std::lock_guard<dxmt::mutex> lock(mutex_commit_);
     inflight_cmdbuf_stop_.store(inflight_cmdbuf_seq_.fetch_add(1));
     inflight_cmdbuf_seq_.notify_one();
     inflight_cmdbuf_wait_thread_.join();
+    SaveDumps(); // a dumped frame's passes completed: a test that never presents, or a game that quit
   }
 
   HRESULT
@@ -201,6 +343,7 @@ public:
   ExecuteCommandLists(UINT Count, ID3D12CommandList *const *ppCommandLists) {
     auto scope = StartCommitting();
     auto &cmdbuf = scope.inflight.cmdbuf;
+    bool dumping = Dumps().frames == Dumps().frame;
     for (unsigned i = 0; i < Count; i++) {
       auto pCommandList = static_cast<MTLD3D12GraphicsCommandList *>(ppCommandLists[i]);
       EncoderData *current = pCommandList->entry;
@@ -342,6 +485,8 @@ public:
           break;
         }
         }
+        if (dumping)
+          DumpPass(cmdbuf, current);
         current = current->next;
       }
     }
@@ -405,6 +550,41 @@ public:
 
   HRESULT
   Present(Presenter *presenter, ID3D12Resource *backbuffer, HANDLE hLantecyWaitable, double after) {
+    HRESULT hr = PresentFrame(presenter, backbuffer, hLantecyWaitable, after);
+    // Once the present is committed: start or stop a frame capture at this boundary.
+    auto &dumps = Dumps();
+    uint64_t frames = ++dumps.frames;
+    if (frames == dumps.frame + 8)
+      SaveDumps();
+    else if (dumps.on_key && dumps.frame == ~0ull && (GetAsyncKeyState(VK_F9) & 0x8000))
+      dumps.frame = frames; // the frame now starting
+    switch (capture_state_.getNextAction(++presented_frames_)) {
+    case CaptureState::NextAction::StartCapture: {
+      WMTCaptureInfo info;
+      info.capture_object = device_->GetMTLDevice();
+      info.destination = WMTCaptureDestinationGPUTraceDocument;
+      char stamp[64];
+      std::time_t now = std::time(nullptr);
+      std::strftime(stamp, sizeof(stamp), "_%H'%M'%S_%m-%d-%y.gputrace", std::localtime(&now));
+      auto file = env::getUnixPath(env::getExeBaseName() + "_F." + std::to_string(presented_frames_ + 1) + stamp);
+      WARN("A new capture will be saved to ", file);
+      info.output_url.set(file.c_str());
+      WMT::CaptureManager::sharedCaptureManager().startCapture(info);
+      break;
+    }
+    case CaptureState::NextAction::StopCapture:
+      WMT::CaptureManager::sharedCaptureManager().stopCapture();
+      break;
+    case CaptureState::NextAction::Nothing:
+      if (capture_state_.shouldCaptureNextFrame())
+        capture_state_.scheduleNextFrameCapture(presented_frames_ + 1);
+      break;
+    }
+    return hr;
+  }
+
+  HRESULT
+  PresentFrame(Presenter *presenter, ID3D12Resource *backbuffer, HANDLE hLantecyWaitable, double after) {
     auto scope = StartCommitting();
     auto &cmdbuf = scope.inflight.cmdbuf;
 

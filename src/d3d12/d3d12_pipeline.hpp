@@ -18,6 +18,10 @@
 
 #pragma once
 #include "airconv_public.h"
+#include "d3d12_device.hpp"
+#include "d3d12_dxil_dump.hpp"
+#include <cstdio>
+#include <string>
 #include "log/log.hpp"
 
 namespace dxmt {
@@ -78,6 +82,25 @@ public:
       SM50FreeError(sm50_error_);
   }
 };
+
+// Capture mode: "<name>=<hash>" of a shader, "" without one.
+inline std::string CapturedShader(const char *name, const D3D12_SHADER_BYTECODE &b) {
+  if (!b.pShaderBytecode)
+    return "";
+  char text[48];
+  snprintf(text, sizeof(text), " %s=%016llx", name, (unsigned long long)CaptureHash(b.pShaderBytecode, b.BytecodeLength));
+  return text;
+}
+
+inline std::string CapturedRootSignature(ID3D12RootSignature *rs) {
+  if (!rs)
+    return " rs=embedded";
+  const void *blob;
+  size_t size = static_cast<MTLD3D12RootSignature *>(rs)->GetBlob(&blob);
+  char text[48];
+  snprintf(text, sizeof(text), " rs=%016llx", (unsigned long long)CaptureHash(blob, size));
+  return text;
+}
 
 // airconv failed to compile a shader: log its message. A DXIL shader DXMT can't translate yet (the DXIL front end's
 // messages start with "DXIL:") gets E_NOTIMPL, anything else E_FAIL. (MacNeutron)
