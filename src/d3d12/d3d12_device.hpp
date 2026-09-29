@@ -43,7 +43,7 @@ namespace dxmt {
 class MTLD3D12GraphicsCommandList : public ID3D12GraphicsCommandList2 {
 public:
   EncoderData *entry;
-  size_t encoder_count;
+  size_t encoder_count = 0; // SIZE_MAX while recording
 };
 
 class MTLD3D12CommandAllocator : public ID3D12CommandAllocator {
@@ -201,6 +201,8 @@ public:
 };
 
 HRESULT CreateD3D12Device(IMTLDXGIAdapter *adapter, REFIID riid, void **ppDevice);
+
+HRESULT CreateClosedCommandList(MTLD3D12Device *pDevice, REFIID riid, void **ppCommandList);
 
 HRESULT
 CreateCommandQueue(MTLD3D12Device *pDevice, const D3D12_COMMAND_QUEUE_DESC *pDesc, REFIID riid, void **ppCommandQueue);

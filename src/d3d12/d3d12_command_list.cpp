@@ -1717,4 +1717,11 @@ MTLD3D12CommandAllocatorImpl::CreateCommandList(
   return cmd_list->QueryInterface(riid, ppCommandList);
 }
 
+// ID3D12Device4::CreateCommandList1: a closed list with no allocator until its first Reset.
+HRESULT
+CreateClosedCommandList(MTLD3D12Device *pDevice, REFIID riid, void **ppCommandList) {
+  auto cmd_list = Com(new MTLD3D12GraphicsCommandListImpl(pDevice));
+  return cmd_list->QueryInterface(riid, ppCommandList);
+}
+
 }; // namespace dxmt

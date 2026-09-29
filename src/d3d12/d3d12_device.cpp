@@ -706,9 +706,11 @@ public:
     return S_OK;
   };
 
+  // Unified memory never pages a resource out, and DXMT's residency sets keep heaps resident: residency calls do
+  // nothing, as on D3DMetal.
   HRESULT STDMETHODCALLTYPE
   Evict(UINT ObjectCount, ID3D12Pageable *const *objects) {
-    return E_NOTIMPL;
+    return S_OK;
   };
 
   HRESULT STDMETHODCALLTYPE
@@ -878,7 +880,7 @@ public:
 
   HRESULT STDMETHODCALLTYPE
   SetResidencyPriority(UINT ObjectCount, ID3D12Pageable *const *pObjects, const D3D12_RESIDENCY_PRIORITY *pPriorities) {
-    return E_NOTIMPL;
+    return S_OK;
   };
 
   HRESULT STDMETHODCALLTYPE
@@ -1118,14 +1120,20 @@ public:
       D3D12_RESIDENCY_FLAGS Flags, UINT NumObjects, ID3D12Pageable *const *ppObjects, ID3D12Fence *pFence,
       UINT64 FenceValue
   ) {
-    return E_NOTIMPL;
+    if (!pFence)
+      return E_INVALIDARG;
+    return pFence->Signal(FenceValue); // already resident: the fence reaches the value at once
   }
 
   HRESULT STDMETHODCALLTYPE
   CreateCommandList1(
       UINT NodeMask, D3D12_COMMAND_LIST_TYPE Type, D3D12_COMMAND_LIST_FLAGS Flags, REFIID riid, void **ppCommandList
   ) {
-    return E_NOTIMPL;
+    InitReturnPtr(ppCommandList);
+    if (Type != D3D12_COMMAND_LIST_TYPE_DIRECT && Type != D3D12_COMMAND_LIST_TYPE_COMPUTE &&
+        Type != D3D12_COMMAND_LIST_TYPE_COPY)
+      return E_INVALIDARG;
+    return CreateClosedCommandList(this, riid, ppCommandList);
   }
 
   HRESULT STDMETHODCALLTYPE
@@ -1274,7 +1282,9 @@ public:
 
   HRESULT STDMETHODCALLTYPE
   CreateHeap1(const D3D12_HEAP_DESC *pDesc, ID3D12ProtectedResourceSession *pSession, REFIID riid, void **ppHeap) {
-    return E_NOTIMPL;
+    if (pSession)
+      return E_NOTIMPL; // protected sessions: none, as CreateCommittedResource1
+    return CreateHeap(pDesc, riid, ppHeap);
   }
 
   HRESULT STDMETHODCALLTYPE
