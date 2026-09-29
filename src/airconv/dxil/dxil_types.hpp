@@ -63,7 +63,8 @@ enum : uint32_t {
   WaveActiveBit = 120, WavePrefixOp = 121, BitcastI16toF16 = 124, BitcastF16toI16 = 125, BitcastI32toF32 = 126,
   BitcastF32toI32 = 127, LegacyF32ToF16 = 130, LegacyF16ToF32 = 131, WaveAllBitCount = 135, WavePrefixBitCount = 136,
   RawBufferLoad = 139, RawBufferStore = 140, Dot2AddHalf = 162, Dot4AddI8Packed = 163, Dot4AddU8Packed = 164,
-  AnnotateHandle = 216, CreateHandleFromBinding = 217, CreateHandleFromHeap = 218, IsHelperLane = 221
+  AnnotateHandle = 216, CreateHandleFromBinding = 217, CreateHandleFromHeap = 218, Unpack4x8 = 219, Pack4x8 = 220,
+  IsHelperLane = 221
 };
 } // namespace op
 

@@ -128,7 +128,7 @@ Lowering::Lower(llvm::CallInst *call) {
   ir.SetInsertPoint(call);
   if ((opcode >= op::FAbs && opcode <= op::Dot4) || opcode == op::MakeDouble || opcode == op::SplitDouble ||
       (opcode >= op::BitcastI16toF16 && opcode <= op::LegacyF16ToF32) ||
-      (opcode >= op::Dot2AddHalf && opcode <= op::Dot4AddU8Packed))
+      (opcode >= op::Dot2AddHalf && opcode <= op::Dot4AddU8Packed) || opcode == op::Unpack4x8 || opcode == op::Pack4x8)
     return LowerMath(opcode, call);
   if ((opcode >= op::CBufferLoad && opcode <= op::AtomicCompareExchange) || opcode == op::CalculateLOD ||
       opcode == op::RawBufferLoad || opcode == op::RawBufferStore)

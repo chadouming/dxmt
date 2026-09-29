@@ -192,6 +192,32 @@ Lowering::LowerMath(uint32_t opcode, llvm::CallInst *call) {
     }
     return done(sum);
   }
+  case op::Unpack4x8: { // (mode: 0 unsigned, 1 signed, packed) -> four bytes, extended to i16 or i32
+    bool s = llvm::cast<llvm::ConstantInt>(arg(1))->getZExtValue() == 1;
+    auto elem = ty->getStructElementType(0);
+    llvm::SmallVector<llvm::Value *, 4> bytes;
+    for (unsigned k = 0; k < 4; k++) {
+      auto t = ir.CreateTrunc(ir.CreateLShr(arg(2), 8 * k), ir.getInt8Ty());
+      bytes.push_back(s ? ir.CreateSExt(t, elem) : ir.CreateZExt(t, elem));
+    }
+    return done(Aggregate(ty, bytes));
+  }
+  case op::Pack4x8: { // (mode: 0 truncate, 1 clamp to [0, 255], 2 clamp to [-128, 127], x, y, z, w) -> i32
+    auto mode = llvm::cast<llvm::ConstantInt>(arg(1))->getZExtValue();
+    llvm::Value *packed = ir.getInt32(0);
+    for (unsigned k = 0; k < 4; k++) {
+      llvm::Value *v = arg(2 + k);
+      if (mode != 0) {
+        auto lo = llvm::ConstantInt::get(v->getType(), mode == 1 ? 0 : -128, true);
+        auto hi = llvm::ConstantInt::get(v->getType(), mode == 1 ? 255 : 127, true);
+        v = ir.CreateSelect(ir.CreateICmpSLT(v, lo), lo, v);
+        v = ir.CreateSelect(ir.CreateICmpSGT(v, hi), hi, v);
+      }
+      auto byte = ir.CreateZExt(ir.CreateTrunc(v, ir.getInt8Ty()), ir.getInt32Ty());
+      packed = ir.CreateOr(packed, ir.CreateShl(byte, 8 * k));
+    }
+    return done(packed);
+  }
   default:
     return Unsupported(call);
   }
