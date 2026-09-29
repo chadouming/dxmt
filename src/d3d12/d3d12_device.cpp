@@ -17,6 +17,7 @@
  */
 
 #include "d3d12_device.hpp"
+#include "d3d12_dxil_dump.hpp"
 #include "d3d12_device_child.hpp"
 #include "Metal.hpp"
 #include "com/com_pointer.hpp"
@@ -238,7 +239,7 @@ public:
       D3D_FEATURE_LEVEL max_level = {};
       for (unsigned i = 0; i < out->NumFeatureLevels; i++)
         max_level = std::max(out->pFeatureLevelsRequested[i], max_level);
-      out->MaxSupportedFeatureLevel = std::min(max_level, D3D_FEATURE_LEVEL_11_1);
+      out->MaxSupportedFeatureLevel = std::min(max_level, DXILCaptureMode() ? D3D_FEATURE_LEVEL_12_1 : D3D_FEATURE_LEVEL_11_1);
       return S_OK;
     }
     case D3D12_FEATURE_FORMAT_INFO:  {
@@ -268,7 +269,9 @@ public:
     case D3D12_FEATURE_SHADER_MODEL: {
       if (DataSize != sizeof(D3D12_FEATURE_DATA_SHADER_MODEL))
         return E_INVALIDARG;
-      reinterpret_cast<D3D12_FEATURE_DATA_SHADER_MODEL *>(pFeatureData)->HighestShaderModel = D3D_SHADER_MODEL_5_1;
+      auto *out = reinterpret_cast<D3D12_FEATURE_DATA_SHADER_MODEL *>(pFeatureData);
+      out->HighestShaderModel =
+          DXILCaptureMode() ? std::min(out->HighestShaderModel, D3D_SHADER_MODEL_6_7) : D3D_SHADER_MODEL_5_1;
       return S_OK;
     }
     case D3D12_FEATURE_D3D12_OPTIONS: {
@@ -279,7 +282,7 @@ public:
       out->OutputMergerLogicOp = FALSE;
       out->MinPrecisionSupport = D3D12_SHADER_MIN_PRECISION_SUPPORT_16_BIT;
       out->TiledResourcesTier = D3D12_TILED_RESOURCES_TIER_NOT_SUPPORTED;
-      out->ResourceBindingTier = D3D12_RESOURCE_BINDING_TIER_2;
+      out->ResourceBindingTier = DXILCaptureMode() ? D3D12_RESOURCE_BINDING_TIER_3 : D3D12_RESOURCE_BINDING_TIER_2;
       out->PSSpecifiedStencilRefSupported = TRUE;
       out->TypedUAVLoadAdditionalFormats = TRUE;
       out->ROVsSupported = TRUE;
@@ -323,13 +326,24 @@ public:
       if (DataSize != sizeof(D3D12_FEATURE_DATA_D3D12_OPTIONS1))
         return E_INVALIDARG;
       auto *out = reinterpret_cast<D3D12_FEATURE_DATA_D3D12_OPTIONS1 *>(pFeatureData);
-      out->WaveOps = 0;
-      out->WaveLaneCountMin = 0;
-      out->WaveLaneCountMax = 0;
+      out->WaveOps = DXILCaptureMode();
+      out->WaveLaneCountMin = DXILCaptureMode() ? 32 : 0;
+      out->WaveLaneCountMax = DXILCaptureMode() ? 32 : 0;
       out->TotalLaneCount = 0;
       // If CheckFeatureSupport succeeds this value will always be true.
       out->ExpandedComputeResourceStates = TRUE;
       out->Int64ShaderOps = FALSE;
+      return S_OK;
+    }
+    case D3D12_FEATURE_D3D12_OPTIONS9: {
+      if (!DXILCaptureMode())
+        break;
+      if (DataSize != sizeof(D3D12_FEATURE_DATA_D3D12_OPTIONS9))
+        return E_INVALIDARG;
+      auto *out = reinterpret_cast<D3D12_FEATURE_DATA_D3D12_OPTIONS9 *>(pFeatureData);
+      *out = {};
+      out->AtomicInt64OnTypedResourceSupported = TRUE;
+      out->AtomicInt64OnGroupSharedSupported = TRUE;
       return S_OK;
     }
     case D3D12_FEATURE_D3D12_OPTIONS12: {

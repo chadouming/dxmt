@@ -33,14 +33,28 @@ const char *DXILStage(const uint8_t *blob, size_t size) {
   return nullptr;
 }
 
-} // namespace
-
-void DumpDXIL(const D3D12_SHADER_BYTECODE &Bytecode) {
+// DXMT_DXIL_DUMP as a Windows path, created on first use; empty when capture is off.
+const std::string &CaptureFolder() {
   static const std::string folder = [] {
     std::string value = env::getEnvVar("DXMT_DXIL_DUMP");
     // Launch options carry Mac paths; Wine's Z: drive is the Mac's root.
-    return !value.empty() && value[0] == '/' ? "Z:" + value : value;
+    if (!value.empty() && value[0] == '/')
+      value = "Z:" + value;
+    if (!value.empty())
+      CreateDirectoryA(value.c_str(), nullptr); // may exist already; any other failure shows as no captures
+    return value;
   }();
+  return folder;
+}
+
+} // namespace
+
+bool DXILCaptureMode() {
+  return !CaptureFolder().empty();
+}
+
+void DumpDXIL(const D3D12_SHADER_BYTECODE &Bytecode) {
+  const std::string &folder = CaptureFolder();
   if (folder.empty() || !Bytecode.pShaderBytecode)
     return;
   auto blob = static_cast<const uint8_t *>(Bytecode.pShaderBytecode);
