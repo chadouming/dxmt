@@ -376,7 +376,14 @@ public:
 
   HRESULT STDMETHODCALLTYPE
   GetClockCalibration(UINT64 *gpu_timestamp, UINT64 *cpu_timestamp) {
-    return E_NOTIMPL;
+    // FIXME: stub matching GetTimestampFrequency. Unreal Engine treats a failure here as fatal.
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    if (gpu_timestamp)
+      *gpu_timestamp = 0;
+    if (cpu_timestamp)
+      *cpu_timestamp = now.QuadPart;
+    return S_OK;
   };
 
   D3D12_COMMAND_QUEUE_DESC *STDMETHODCALLTYPE
