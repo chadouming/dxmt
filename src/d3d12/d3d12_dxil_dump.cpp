@@ -1,5 +1,6 @@
 #include "d3d12_dxil_dump.hpp"
 #include "util_env.hpp"
+#include "util_string.hpp"
 #include <windows.h>
 #include <cstdint>
 #include <cstdio>
@@ -33,16 +34,18 @@ const char *DXILStage(const uint8_t *blob, size_t size) {
   return nullptr;
 }
 
-// DXMT_DXIL_DUMP as a Windows path, created on first use; empty when capture is off.
-const std::string &CaptureFolder() {
-  static const std::string folder = [] {
+// DXMT_DXIL_DUMP as a Windows path, created on first use; empty when capture is off. Wide, because the variable
+// arrives as UTF-8 and the ANSI APIs would misread any name outside ASCII.
+const std::wstring &CaptureFolder() {
+  static const std::wstring folder = [] {
     std::string value = env::getEnvVar("DXMT_DXIL_DUMP");
     // Launch options carry Mac paths; Wine's Z: drive is the Mac's root.
     if (!value.empty() && value[0] == '/')
       value = "Z:" + value;
-    if (!value.empty())
-      CreateDirectoryA(value.c_str(), nullptr); // may exist already; any other failure shows as no captures
-    return value;
+    std::wstring wide = str::tows(value.c_str());
+    if (!wide.empty())
+      CreateDirectoryW(wide.c_str(), nullptr); // may exist already; any other failure shows as no captures
+    return wide;
   }();
   return folder;
 }
@@ -54,7 +57,7 @@ bool DXILCaptureMode() {
 }
 
 void DumpDXIL(const D3D12_SHADER_BYTECODE &Bytecode) {
-  const std::string &folder = CaptureFolder();
+  const std::wstring &folder = CaptureFolder();
   if (folder.empty() || !Bytecode.pShaderBytecode)
     return;
   auto blob = static_cast<const uint8_t *>(Bytecode.pShaderBytecode);
@@ -66,17 +69,22 @@ void DumpDXIL(const D3D12_SHADER_BYTECODE &Bytecode) {
     hash = (hash ^ blob[i]) * 0x100000001b3ull;
   char name[64];
   snprintf(name, sizeof(name), "\\%s-%016llx.dxil", stage, (unsigned long long)hash);
-  std::string path = folder + name;
-  // CREATE_NEW keeps a capture made before; any failure only means this shader isn't captured.
-  HANDLE file = CreateFileA(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+  std::wstring path = folder + str::tows(name);
+  if (GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES)
+    return; // captured before
+  // Written under a temporary name and renamed, so a capture cut short (a killed game) never takes the final name.
+  // Any failure only means this shader isn't captured.
+  std::wstring temp = path + L".tmp";
+  HANDLE file = CreateFileW(temp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
   if (file == INVALID_HANDLE_VALUE)
     return;
   DWORD written = 0;
   bool ok = WriteFile(file, blob, (DWORD)Bytecode.BytecodeLength, &written, nullptr) &&
             written == Bytecode.BytecodeLength;
   CloseHandle(file);
-  if (!ok)
-    DeleteFileA(path.c_str());
+  // MoveFileW fails if another thread captured the same shader meanwhile: that capture is kept.
+  if (!ok || !MoveFileW(temp.c_str(), path.c_str()))
+    DeleteFileW(temp.c_str());
 }
 
 } // namespace dxmt
