@@ -17,6 +17,7 @@
  */
 #pragma once
 #include "dxil_types.hpp"
+#include "../air_signature.hpp"
 #include "../airconv_public.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
@@ -56,6 +57,13 @@ llvm::Error AddSignatureHandlers(const EntryInfo &entry, const llvm::Module &mod
                                  std::map<uint32_t, uint32_t> &unpacked_inputs);
 // dxil_signature.cpp: defines the simdgroup lane inputs when the module uses wave operations.
 void AddWaveInputs(const llvm::Module &module, dxbc::SM50ShaderInternal *shader, uint32_t &lane_index_arg, uint32_t &lane_count_arg);
+
+// dxil_signature.cpp: the vertex output for row `row` of an arbitrary element; pixel inputs link to it by name and type.
+air::OutputVertex Varying(const SignatureElement &e, uint32_t row);
+
+// dxil_passthrough.cpp: a vertex function whose outputs are `pixel`'s arbitrary inputs, all zero, and position
+// (0, 0, 0, 1) (dxil-translate puts a pixel shader in a Metal pipeline with it).
+llvm::Expected<std::unique_ptr<llvm::Module>> BuildPassThroughVertex(const EntryInfo &pixel, llvm::LLVMContext &context);
 
 // dxil_converter.cpp: SM50Compile's DXIL branch; returns the AIR module, ready for airconv's passes.
 llvm::Expected<std::unique_ptr<llvm::Module>> ConvertDXIL(

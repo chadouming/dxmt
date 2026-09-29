@@ -1,5 +1,6 @@
 #include "dxbc_converter.hpp"
 #include "dxil/dxil.hpp"
+#include "dxil/dxil_public.h"
 #include "DXBCParser/BlobContainer.h"
 #include "DXBCParser/ShaderBinary.h"
 #include "airconv_error.hpp"
@@ -1427,6 +1428,35 @@ AIRCONV_API int SM50Compile(
 
   pModule.reset();
 
+  *ppBitcode = (sm50_bitcode_t)compiled;
+  return 0;
+}
+
+AIRCONV_API int DXILCompilePassThroughVertex(sm50_shader_t PixelShader, sm50_bitcode_t *ppBitcode, sm50_error_t *ppError) {
+  using namespace dxmt;
+  auto shader = (dxbc::SM50ShaderInternal *)PixelShader;
+  if (ppError)
+    *ppError = nullptr;
+  auto errorObj = new SM50ErrorInternal();
+  llvm::raw_svector_ostream errorOut(errorObj->buf);
+  if (!shader->dxil || shader->dxil->entry.kind != dxil::ShaderKind::Pixel) {
+    errorOut << "DXIL: not a DXIL pixel shader";
+    *ppError = (sm50_error_t)errorObj;
+    return 1;
+  }
+  llvm::LLVMContext context;
+  context.setOpaquePointers(false);
+  auto module = dxil::BuildPassThroughVertex(shader->dxil->entry, context);
+  if (!module) {
+    llvm::handleAllErrors(module.takeError(), [&](const UnsupportedFeature &u) { errorOut << u.msg; });
+    *ppError = (sm50_error_t)errorObj;
+    return 1;
+  }
+  delete errorObj;
+  runOptimizationPasses(**module);
+  auto compiled = new SM50CompiledBitcodeInternal();
+  llvm::raw_svector_ostream OS(compiled->vec);
+  metallib::MetallibWriter().Write(**module, OS);
   *ppBitcode = (sm50_bitcode_t)compiled;
   return 0;
 }

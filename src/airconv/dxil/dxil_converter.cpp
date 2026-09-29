@@ -58,6 +58,7 @@ ConvertDXIL(SM50ShaderInternal *shader, const char *name, llvm::LLVMContext &con
   llvm::Function *dxil_main = module->getFunction(entry.name);
   if (!dxil_main)
     return llvm::make_error<UnsupportedFeature>("DXIL: entry function missing");
+  dxil_main->setName("dxil.entry"); // frees its name: the caller may ask for the same one (e.g. "main")
   initializeModule(*module); // AIR triple, data layout, SDK version, module flags
 
   // From here on, as convert_dxbc_compute_shader (dxbc_converter.cpp), except that the body comes from DXIL.

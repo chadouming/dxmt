@@ -181,7 +181,7 @@ AddVertexHandlers(const EntryInfo &entry, SM50ShaderInternal *shader, std::map<u
     }
     case SemanticKind::Arbitrary:
       for (uint32_t r = 0; r < e.rows; r++) {
-        auto index = fs.DefineOutput(air::OutputVertex{.user = UserName(e, r), .type = to_msl_type(RegType(e.type))});
+        auto index = fs.DefineOutput(Varying(e, r));
         uint32_t col = e.start_col, cols = e.cols;
         handlers.push_back([=](SignatureContext &sig) {
           if (!sig.skip_vertex_output)
@@ -226,8 +226,8 @@ AddPixelHandlers(const EntryInfo &entry, SM50ShaderInternal *shader, std::map<ui
     case SemanticKind::Arbitrary:
       for (uint32_t r = 0; r < e.rows; r++) {
         auto index = fs.DefineInput(air::InputFragmentStageIn{
-            .user = UserName(e, r),
-            .type = to_msl_type(RegType(e.type)),
+            .user = Varying(e, r).user,
+            .type = Varying(e, r).type,
             .interpolation = ToInterpolation(e.interpolation),
             .pull_mode = false
         });
@@ -326,6 +326,10 @@ AddPixelHandlers(const EntryInfo &entry, SM50ShaderInternal *shader, std::map<ui
 }
 
 } // namespace
+
+air::OutputVertex Varying(const SignatureElement &e, uint32_t row) {
+  return air::OutputVertex{.user = UserName(e, row), .type = to_msl_type(RegType(e.type))};
+}
 
 void
 AddWaveInputs(const llvm::Module &module, SM50ShaderInternal *shader, uint32_t &lane_index_arg, uint32_t &lane_count_arg) {
