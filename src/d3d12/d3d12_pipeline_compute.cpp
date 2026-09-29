@@ -22,6 +22,7 @@
 #include "d3d12_pageable.hpp"
 #include "d3d12_pipeline.hpp"
 #include "log/log.hpp"
+#include "d3d12_dxil_dump.hpp"
 
 namespace dxmt {
 
@@ -36,6 +37,7 @@ public:
 
   HRESULT
   Initialize(const D3D12_COMPUTE_PIPELINE_STATE_DESC *pDesc) {
+    DumpDXIL(pDesc->CS);
 
     SM50Shader shader_cs;
     SM50Error sm50_err;

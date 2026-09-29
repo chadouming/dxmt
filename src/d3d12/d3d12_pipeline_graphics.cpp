@@ -17,6 +17,7 @@
  */
 
 #include "d3d12_device.hpp"
+#include "d3d12_dxil_dump.hpp"
 #include "d3d12_pageable.hpp"
 #include "d3d12_pipeline.hpp"
 #include "dxmt_format.hpp"
@@ -466,6 +467,9 @@ public:
 
   virtual HRESULT
   Initialize(const D3D12_GRAPHICS_PIPELINE_STATE_DESC *pDesc) {
+    for (auto *shader : {&pDesc->VS, &pDesc->PS, &pDesc->GS, &pDesc->HS, &pDesc->DS})
+      DumpDXIL(*shader);
+
     if (pDesc->StreamOutput.NumEntries) {
       ERR("CreatePipelineState: SO not supported");
       return E_NOTIMPL;
