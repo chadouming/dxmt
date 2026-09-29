@@ -172,9 +172,11 @@ ConvertDXIL(SM50ShaderInternal *shader, const char *name, llvm::LLVMContext &con
   if (auto err = prologue.build(ctx).takeError())
     return std::move(err);
 
-  // The DXIL body: move its blocks after `epilogue`, enter them from `entry`, and leave through `epilogue`.
+  // The DXIL body: move its blocks to the end, enter them from where the prologue ended (it may have added blocks,
+  // e.g. pulling vertex inputs), and leave through `epilogue`.
+  auto body = &dxil_main->getEntryBlock();
   function->getBasicBlockList().splice(function->end(), dxil_main->getBasicBlockList());
-  builder.CreateBr(epilogue_bb->getNextNode());
+  builder.CreateBr(body);
   for (auto &bb : *function)
     if (auto ret = llvm::dyn_cast_or_null<llvm::ReturnInst>(bb.getTerminator())) {
       llvm::BranchInst::Create(epilogue_bb, ret);
