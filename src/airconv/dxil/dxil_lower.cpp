@@ -334,6 +334,18 @@ Lowering::LowerOther(uint32_t opcode, llvm::CallInst *call) {
                                               ir.getInt32(0), ir.getInt32(0)}));
     return llvm::Error::success();
   }
+  case op::QuadReadLaneAt: { // (122, T, i32 quadLane)
+    auto v = call->getArgOperand(1);
+    auto lane = ir.CreateTrunc(call->getArgOperand(2), ir.getInt16Ty());
+    Replace(call, Simd(ir, "air.quad_shuffle" + SimdSuffix(v->getType(), false), v->getType(), {v, lane}));
+    return llvm::Error::success();
+  }
+  case op::QuadOp: { // (123, T, i8 op): read across X (0), Y (1) or the diagonal (2): the quad lane XOR 1, 2 or 3
+    auto v = call->getArgOperand(1);
+    auto mask = ir.getInt16(ConstantU32(call->getArgOperand(2)) + 1);
+    Replace(call, Simd(ir, "air.quad_shuffle_xor" + SimdSuffix(v->getType(), false), v->getType(), {v, mask}));
+    return llvm::Error::success();
+  }
   case op::WaveReadLaneAt: { // (117, T, i32 lane)
     auto v = call->getArgOperand(1);
     auto lane = ir.CreateTrunc(call->getArgOperand(2), ir.getInt16Ty());

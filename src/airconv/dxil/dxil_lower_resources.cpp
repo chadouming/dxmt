@@ -181,6 +181,13 @@ unsigned Dimensions(Texture::ResourceKind k) {
   }
 }
 
+// DXIL's atomic operation codes (DXIL.rst, AtomicBinOpCode) as LLVM's.
+llvm::AtomicRMWInst::BinOp AtomicOp(llvm::Value *code) {
+  using B = llvm::AtomicRMWInst::BinOp;
+  static const B ops[] = {B::Add, B::And, B::Or, B::Xor, B::Min, B::Max, B::UMin, B::UMax, B::Xchg};
+  return ops[std::min(ConstantU32(code), 8u)];
+}
+
 // The component of c0..c3 holding the array slice.
 unsigned ArrayComponent(Texture::ResourceKind k) {
   switch (k) {
@@ -263,6 +270,27 @@ Lowering::LowerTexture(uint32_t opcode, llvm::CallInst *call, const HandleInfo &
       texel = ir.CreateInsertElement(texel, Cast(arg(5 + c), texel_ty->getElementType()), c);
     air.CreateWrite(tex, d->ResourceHandle, pos, array_index(2), nullptr, ir.getInt32(0), texel, d->GlobalCoherent);
     Replace(call, nullptr);
+    return llvm::Error::success();
+  }
+  case op::AtomicBinOp:             // (78, handle, i32 op, i32 c0, c1, c2, i32 value)
+  case op::AtomicCompareExchange: { // (79, handle, i32 c0, c1, c2, i32 compare, i32 value)
+    bool cas = opcode == op::AtomicCompareExchange;
+    unsigned first = cas ? 2 : 3;
+    llvm::Value *pos, *array = nullptr;
+    if (logical == Texture::texture_buffer) { // as the DXBC typed UAV atomic: out of range goes to ~0u
+      auto index = arg(first);
+      auto oob = ir.CreateICmpUGE(index, conv.DecodeTextureBufferElement(d->Metadata));
+      pos = ir.CreateSelect(oob, ir.getInt32(~0u), ir.CreateAdd(index, conv.DecodeTextureBufferOffset(d->Metadata)));
+    } else {
+      pos = vector(first, ir.getInt32Ty());
+      array = array_index(first);
+    }
+    auto splat = [&](llvm::Value *v) { return ir.CreateVectorSplat(4, v); };
+    auto old = cas ? air.CreateAtomicCmpXchg(tex, d->ResourceHandle, pos, splat(arg(5)), splat(arg(6)), array).first
+                   : air.CreateAtomicRMW(tex, d->ResourceHandle, AtomicOp(arg(2)), pos, splat(arg(6)), array);
+    if (!old)
+      return Unsupported(call); // not an integer texture
+    Replace(call, ir.CreateExtractElement(old, (uint64_t)0));
     return llvm::Error::success();
   }
   default:
@@ -466,6 +494,29 @@ Lowering::LowerResource(uint32_t opcode, llvm::CallInst *call) {
                             4, ConstantU32(call->getArgOperand(8), 0xf));
   case op::GetDimensions: // (72, handle, i32 mipLevel)
     return LowerDimensions(call, h);
+  case op::AtomicBinOp:           // (78, handle, i32 op, i32 c0, c1, c2, i32 value) -> old
+  case op::AtomicCompareExchange: // (79, handle, i32 c0, c1, c2, i32 compare, i32 value) -> old
+    if (!call->getType()->isIntegerTy(32))
+      return Unsupported(call); // 64-bit atomics
+    if (kind == ResourceKind::RawBuffer || structured) {
+      bool cas = opcode == op::AtomicCompareExchange;
+      unsigned c = cas ? 2 : 3;
+      auto offset = structured ? ir.CreateAdd(ir.CreateMul(call->getArgOperand(c), stride), call->getArgOperand(c + 1))
+                               : call->getArgOperand(c);
+      auto buffer = Buffer(h);
+      if (!buffer) {
+        Replace(call, ir.getInt32(0));
+        return llvm::Error::success();
+      }
+      auto ptr = ElementPointer(*buffer, offset, ir.getInt32Ty()); // null out of bounds, as loads and stores
+      Replace(call, cas ? ir.CreateExtractValue(ir.CreateAtomicCmpXchg(ptr, call->getArgOperand(5), call->getArgOperand(6), {},
+                                                                       llvm::AtomicOrdering::Monotonic,
+                                                                       llvm::AtomicOrdering::Monotonic),
+                                                {0})
+                        : air.CreateAtomicRMW(AtomicOp(call->getArgOperand(2)), ptr, call->getArgOperand(6)));
+      return llvm::Error::success();
+    }
+    return LowerTexture(opcode, call, h); // typed buffers and textures
   case op::TextureLoad:
   case op::TextureStore:
   case op::Sample:
