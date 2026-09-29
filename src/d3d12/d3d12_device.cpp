@@ -100,7 +100,8 @@ public:
 
     if (riid == __uuidof(IUnknown) || riid == __uuidof(ID3D12Object) || riid == __uuidof(ID3D12Device) ||
         riid == __uuidof(ID3D12Device1) || riid == __uuidof(ID3D12Device2) || riid == __uuidof(ID3D12Device3) ||
-        riid == __uuidof(ID3D12Device4)) {
+        riid == __uuidof(ID3D12Device4) || riid == __uuidof(ID3D12Device5) || riid == __uuidof(ID3D12Device6) ||
+        riid == __uuidof(ID3D12Device7) || riid == __uuidof(ID3D12Device8)) {
       *ppvObject = ref(this);
       return S_OK;
     }
@@ -1138,7 +1139,137 @@ public:
       D3D12_RESOURCE_STATES InitialState, const D3D12_CLEAR_VALUE *OptimizedClearValue,
       ID3D12ProtectedResourceSession *pSession, REFIID riid, void **ppResource
   ) {
+    if (pSession) // protected sessions aren't supported (CreateProtectedResourceSession fails)
+      return E_NOTIMPL;
+    return CreateCommittedResource(pHeapProps, HeapFlags, pDesc, InitialState, OptimizedClearValue, riid, ppResource);
+  }
+
+  // MacNeutron: ID3D12Device5-8. Raytracing, meta commands, lifetime tracking, protected sessions and sampler feedback
+  // aren't supported (the features report none of them); the D3D12_RESOURCE_DESC1 methods take the plain desc
+  // (SamplerFeedbackMipRegion only matters to sampler feedback).
+  static D3D12_RESOURCE_DESC
+  PlainDesc(const D3D12_RESOURCE_DESC1 &d) {
+    return {d.Dimension, d.Alignment, d.Width, d.Height, d.DepthOrArraySize, d.MipLevels, d.Format, d.SampleDesc, d.Layout, d.Flags};
+  }
+
+  HRESULT STDMETHODCALLTYPE
+  CreateLifetimeTracker(ID3D12LifetimeOwner *owner, REFIID riid, void **tracker) {
+    InitReturnPtr(tracker);
     return E_NOTIMPL;
+  }
+
+  void STDMETHODCALLTYPE
+  RemoveDevice() {}
+
+  HRESULT STDMETHODCALLTYPE
+  EnumerateMetaCommands(UINT *count, D3D12_META_COMMAND_DESC *descs) {
+    if (!count)
+      return E_INVALIDARG;
+    *count = 0;
+    return S_OK;
+  }
+
+  HRESULT STDMETHODCALLTYPE
+  EnumerateMetaCommandParameters(
+      REFGUID command_id, D3D12_META_COMMAND_PARAMETER_STAGE stage, UINT *total_size, UINT *count,
+      D3D12_META_COMMAND_PARAMETER_DESC *descs
+  ) {
+    return E_INVALIDARG; // there are no meta commands
+  }
+
+  HRESULT STDMETHODCALLTYPE
+  CreateMetaCommand(REFGUID command_id, UINT node_mask, const void *data, SIZE_T size, REFIID riid, void **command) {
+    InitReturnPtr(command);
+    return E_INVALIDARG;
+  }
+
+  HRESULT STDMETHODCALLTYPE
+  CreateStateObject(const D3D12_STATE_OBJECT_DESC *desc, REFIID riid, void **state_object) {
+    InitReturnPtr(state_object);
+    return E_NOTIMPL;
+  }
+
+  void STDMETHODCALLTYPE
+  GetRaytracingAccelerationStructurePrebuildInfo(
+      const D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS *desc,
+      D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO *info
+  ) {
+    if (info)
+      *info = {};
+  }
+
+  D3D12_DRIVER_MATCHING_IDENTIFIER_STATUS STDMETHODCALLTYPE
+  CheckDriverMatchingIdentifier(D3D12_SERIALIZED_DATA_TYPE type, const D3D12_SERIALIZED_DATA_DRIVER_MATCHING_IDENTIFIER *identifier) {
+    return D3D12_DRIVER_MATCHING_IDENTIFIER_UNSUPPORTED_TYPE;
+  }
+
+  HRESULT STDMETHODCALLTYPE
+  SetBackgroundProcessingMode(
+      D3D12_BACKGROUND_PROCESSING_MODE mode, D3D12_MEASUREMENTS_ACTION action, HANDLE event, WINBOOL *further_measurements
+  ) {
+    if (further_measurements)
+      *further_measurements = FALSE;
+    return S_OK;
+  }
+
+  HRESULT STDMETHODCALLTYPE
+  AddToStateObject(const D3D12_STATE_OBJECT_DESC *addition, ID3D12StateObject *grow_from, REFIID riid, void **new_state_object) {
+    InitReturnPtr(new_state_object);
+    return E_NOTIMPL;
+  }
+
+  HRESULT STDMETHODCALLTYPE
+  CreateProtectedResourceSession1(const D3D12_PROTECTED_RESOURCE_SESSION_DESC1 *desc, REFIID riid, void **session) {
+    InitReturnPtr(session);
+    return E_NOTIMPL;
+  }
+
+  D3D12_RESOURCE_ALLOCATION_INFO *STDMETHODCALLTYPE
+  GetResourceAllocationInfo2(
+      D3D12_RESOURCE_ALLOCATION_INFO *__ret, UINT VisibleMask, UINT ResourceDescCount, const D3D12_RESOURCE_DESC1 *pDescs,
+      D3D12_RESOURCE_ALLOCATION_INFO1 *pAllocationInfos
+  ) {
+    std::vector<D3D12_RESOURCE_DESC> descs(ResourceDescCount);
+    for (UINT i = 0; i < ResourceDescCount; i++)
+      descs[i] = PlainDesc(pDescs[i]);
+    return GetResourceAllocationInfo1(__ret, VisibleMask, ResourceDescCount, descs.data(), pAllocationInfos);
+  }
+
+  HRESULT STDMETHODCALLTYPE
+  CreateCommittedResource2(
+      const D3D12_HEAP_PROPERTIES *pHeapProps, D3D12_HEAP_FLAGS HeapFlags, const D3D12_RESOURCE_DESC1 *pDesc,
+      D3D12_RESOURCE_STATES InitialState, const D3D12_CLEAR_VALUE *OptimizedClearValue,
+      ID3D12ProtectedResourceSession *pSession, REFIID riid, void **ppResource
+  ) {
+    if (!pDesc)
+      return E_INVALIDARG;
+    auto desc = PlainDesc(*pDesc);
+    return CreateCommittedResource1(pHeapProps, HeapFlags, &desc, InitialState, OptimizedClearValue, pSession, riid, ppResource);
+  }
+
+  HRESULT STDMETHODCALLTYPE
+  CreatePlacedResource1(
+      ID3D12Heap *pHeap, UINT64 Offset, const D3D12_RESOURCE_DESC1 *pDesc, D3D12_RESOURCE_STATES InitialState,
+      const D3D12_CLEAR_VALUE *OptimizedClearValue, REFIID riid, void **ppResource
+  ) {
+    if (!pDesc)
+      return E_INVALIDARG;
+    auto desc = PlainDesc(*pDesc);
+    return CreatePlacedResource(pHeap, Offset, &desc, InitialState, OptimizedClearValue, riid, ppResource);
+  }
+
+  void STDMETHODCALLTYPE
+  CreateSamplerFeedbackUnorderedAccessView(ID3D12Resource *targeted, ID3D12Resource *feedback, D3D12_CPU_DESCRIPTOR_HANDLE dst) {
+    WARN("CreateSamplerFeedbackUnorderedAccessView: sampler feedback not supported");
+  }
+
+  void STDMETHODCALLTYPE
+  GetCopyableFootprints1(
+      const D3D12_RESOURCE_DESC1 *pDesc, UINT FirstSubresource, UINT SubresourceCount, UINT64 BaseOffset,
+      D3D12_PLACED_SUBRESOURCE_FOOTPRINT *pLayouts, UINT *pNumRows, UINT64 *pRowSizeInBytes, UINT64 *pTotalBytes
+  ) {
+    auto desc = PlainDesc(*pDesc);
+    GetCopyableFootprints(&desc, FirstSubresource, SubresourceCount, BaseOffset, pLayouts, pNumRows, pRowSizeInBytes, pTotalBytes);
   }
 
   HRESULT STDMETHODCALLTYPE
