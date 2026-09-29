@@ -18,6 +18,7 @@
 
 #include "dxmt_fence.hpp"
 #include <thread>
+#include <vector>
 
 namespace dxmt {
 
@@ -55,6 +56,14 @@ EventListener::~EventListener() {
 void
 EventListener::setEventOnValue(Fence const *fence, HANDLE event, uint64_t value) {
   MTLSharedEvent_setWin32EventAtValue(fence->sharedEvent().handle, shared_event_listener_, event, value);
+}
+
+void
+EventListener::setEventOnValues(Fence const *const *fences, const uint64_t *values, uint32_t count, bool all, HANDLE event) {
+  std::vector<obj_handle_t> events(count);
+  for (uint32_t i = 0; i < count; i++)
+    events[i] = fences[i]->sharedEvent().handle;
+  MTLSharedEvent_setWin32EventAtValues(shared_event_listener_, events.data(), values, count, all ? count : 1, event);
 }
 
 }; // namespace dxmt

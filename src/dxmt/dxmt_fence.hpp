@@ -87,6 +87,8 @@ public:
   ~EventListener();
 
   void setEventOnValue(Fence const *fence, HANDLE event, uint64_t value);
+  // Sets the event once all (or any) of the fences reach their values.
+  void setEventOnValues(Fence const *const *fences, const uint64_t *values, uint32_t count, bool all, HANDLE event);
 
 private:
   obj_handle_t shared_event_listener_;

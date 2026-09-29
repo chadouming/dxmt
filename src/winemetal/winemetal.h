@@ -1954,6 +1954,12 @@ WINEMETAL_API void MTLSharedEvent_setWin32EventAtValue(
     obj_handle_t event, obj_handle_t shared_event_listener, void *nt_event_handle, uint64_t at_value
 );
 
+// Sets the Win32 event once `needed` of the `count` shared events reach their values (all: count, any: 1).
+WINEMETAL_API void MTLSharedEvent_setWin32EventAtValues(
+    obj_handle_t shared_event_listener, const obj_handle_t *shared_events, const uint64_t *values, uint32_t count,
+    uint32_t needed, void *nt_event_handle
+);
+
 WINEMETAL_API obj_handle_t MTLDevice_newFence(obj_handle_t device);
 
 WINEMETAL_API obj_handle_t MTLDevice_newEvent(obj_handle_t device);

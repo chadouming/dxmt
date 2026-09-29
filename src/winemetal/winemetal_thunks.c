@@ -1331,3 +1331,18 @@ MTLTexture_getBytes(
   params.bytes_per_image = bytes_per_image;
   UNIX_CALL(145, &params);
 }
+
+WINEMETAL_API void
+MTLSharedEvent_setWin32EventAtValues(
+    obj_handle_t shared_event_listener, const obj_handle_t *shared_events, const uint64_t *values, uint32_t count,
+    uint32_t needed, void *nt_event_handle
+) {
+  struct unixcall_mtlsharedevent_seteventatvalues params;
+  params.shared_event_listener = shared_event_listener;
+  WMT_MEMPTR_SET(params.shared_events, shared_events);
+  WMT_MEMPTR_SET(params.values, values);
+  params.count = count;
+  params.needed = needed;
+  params.event_handle = (obj_handle_t)PtrToUInt64(nt_event_handle);
+  UNIX_CALL(146, &params);
+}

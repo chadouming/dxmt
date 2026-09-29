@@ -2563,6 +2563,45 @@ _MTLSharedEvent_setWin32EventAtValue(void *obj) {
 }
 
 static NTSTATUS
+_MTLSharedEvent_setWin32EventAtValues(void *obj) {
+  struct unixcall_mtlsharedevent_seteventatvalues *params = obj;
+  shared_event_listener_t q = (shared_event_listener_t)params->shared_event_listener;
+  const obj_handle_t *events = params->shared_events.ptr;
+  const uint64_t *values = params->values.ptr;
+  void *nt_event_handle = (void *)params->event_handle;
+  // Counts notifications down on the listener's own run loop: no thread. `refs` frees it after the last one.
+  struct countdown {
+    _Atomic uint32_t needed;
+    _Atomic uint32_t refs;
+  } *c = malloc(sizeof(*c));
+  atomic_init(&c->needed, params->needed);
+  atomic_init(&c->refs, params->count);
+  for (uint32_t i = 0; i < params->count; i++) {
+    [(id<MTLSharedEvent>)events[i]
+        notifyListener:q->shared_listener
+               atValue:values[i]
+                 block:^(id<MTLSharedEvent> _e, uint64_t _v) {
+                   while (!atomic_load_explicit(&q->runloop_ref, memory_order_acquire)) {
+#if defined(__x86_64__)
+                     _mm_pause();
+#elif defined(__aarch64__)
+                     __asm__ __volatile__("yield");
+#endif
+                   }
+                   if (atomic_fetch_sub(&c->needed, 1) == 1) {
+                     CFRunLoopPerformBlock(q->runloop_ref, kCFRunLoopCommonModes, ^{
+                       NtSetEvent(nt_event_handle, NULL);
+                     });
+                     CFRunLoopWakeUp(q->runloop_ref);
+                   }
+                   if (atomic_fetch_sub(&c->refs, 1) == 1)
+                     free(c);
+                 }];
+  }
+  return STATUS_SUCCESS;
+}
+
+static NTSTATUS
 _SharedEventListener_start(void *obj) {
   struct unixcall_generic_obj_noret *params = obj;
   shared_event_listener_t q = (shared_event_listener_t)params->handle;
@@ -2606,6 +2645,12 @@ _SharedEventListener_destroy(void *obj) {
 #else
 static NTSTATUS
 _MTLSharedEvent_setWin32EventAtValue(void *obj) {
+  // nop
+  return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+_MTLSharedEvent_setWin32EventAtValues(void *obj) {
   // nop
   return STATUS_SUCCESS;
 }
@@ -3314,6 +3359,7 @@ const void *__wine_unix_call_funcs[] = {
     &_MTLDevice_newIndirectCommandBuffer,
     &_MTLDevice_newLibraryWithSource,
     &_MTLTexture_getBytes,
+    &_MTLSharedEvent_setWin32EventAtValues,
 };
 
 #ifndef DXMT_NATIVE
@@ -3464,5 +3510,6 @@ const void *__wine_unix_call_wow64_funcs[] = {
     &_MTLDevice_newIndirectCommandBuffer,
     &_MTLDevice_newLibraryWithSource,
     &_MTLTexture_getBytes,
+    &_MTLSharedEvent_setWin32EventAtValues,
 };
 #endif

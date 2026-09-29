@@ -289,6 +289,15 @@ struct unixcall_mtlsharedevent_setevent {
   uint64_t value;
 };
 
+struct unixcall_mtlsharedevent_seteventatvalues {
+  obj_handle_t shared_event_listener;
+  struct WMTConstMemoryPointer shared_events; // obj_handle_t[count]
+  struct WMTConstMemoryPointer values;        // uint64_t[count]
+  uint32_t count;
+  uint32_t needed;
+  obj_handle_t event_handle;
+};
+
 struct unixcall_mtlsharedevent_createmachport {
   obj_handle_t event;
   uint32_t ret_mach_port;

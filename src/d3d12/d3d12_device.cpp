@@ -875,7 +875,22 @@ public:
       ID3D12Fence *const *pFences, const UINT64 *pValues, UINT FenceCount, D3D12_MULTIPLE_FENCE_WAIT_FLAGS Flags,
       HANDLE hEvent
   ) {
-    return E_NOTIMPL;
+    if (!FenceCount)
+      return S_OK; // nothing to wait for; D3DMetal leaves the event alone too
+    if (!pFences || !pValues)
+      return E_INVALIDARG;
+    std::vector<Fence const *> fences(FenceCount);
+    for (UINT i = 0; i < FenceCount; i++)
+      fences[i] = static_cast<MTLD3D12Fence *>(pFences[i])->fence.ptr();
+    bool all = Flags == D3D12_MULTIPLE_FENCE_WAIT_FLAG_ALL;
+    // No event: wait here, as SetEventOnCompletion does.
+    HANDLE event = hEvent ? hEvent : CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    event_listener.setEventOnValues(fences.data(), pValues, FenceCount, all, event);
+    if (!hEvent) {
+      WaitForSingleObject(event, INFINITE);
+      CloseHandle(event);
+    }
+    return S_OK;
   };
 
   HRESULT STDMETHODCALLTYPE
