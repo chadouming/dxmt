@@ -156,7 +156,8 @@ InitializeDXIL(const Container &container, SM50ShaderInternal *shader, MTL_SHADE
   default: return llvm::make_error<UnsupportedFeature>("DXIL: only vertex, pixel and compute shaders are supported");
   }
   FillResourceMaps(*entry, **module, shader->shader_info);
-  if (auto err = AddSignatureHandlers(*entry, **module, shader))
+  std::map<uint32_t, uint32_t> unpacked_inputs;
+  if (auto err = AddSignatureHandlers(*entry, **module, shader, unpacked_inputs))
     return err;
   if (entry->kind == ShaderKind::Compute) {
     std::copy(entry->numthreads, entry->numthreads + 3, shader->threadgroup_size);
@@ -165,6 +166,7 @@ InitializeDXIL(const Container &container, SM50ShaderInternal *shader, MTL_SHADE
   auto dxil = std::make_shared<DXILShader>();
   dxil->bitcode.assign(container.bitcode, container.bitcode + container.bitcode_size);
   dxil->entry = std::move(*entry);
+  dxil->unpacked_inputs = std::move(unpacked_inputs);
   shader->dxil = dxil;
   if (refl) {
     *refl = {};

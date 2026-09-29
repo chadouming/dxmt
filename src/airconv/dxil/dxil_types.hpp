@@ -16,7 +16,9 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  */
 #pragma once
+#include <cctype>
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -107,6 +109,20 @@ struct EntryInfo {
 struct DXILShader {
   std::vector<char> bitcode; // parsed again by every SM50Compile, which has its own context
   EntryInfo entry;
+  // Input elements that aren't in a signature register (unpacked system values): element ID -> function argument,
+  // or one of the kUnpacked* values below.
+  std::map<uint32_t, uint32_t> unpacked_inputs;
 };
+
+// Vertex shaders' unpacked SV_VertexID/SV_InstanceID read io_binding_map's vertex_id/instance_id instead of an argument.
+constexpr uint32_t kUnpackedVertexID = ~0u, kUnpackedInstanceID = ~0u - 1;
+
+// Varyings link by semantic, not register (DXIL packs each stage's signature on its own): "TEXCOORD0".
+inline std::string UserName(const SignatureElement &e, uint32_t row) {
+  std::string name = e.name;
+  for (auto &c : name)
+    c = (char)toupper((unsigned char)c);
+  return name + std::to_string(row < e.semantic_indices.size() ? e.semantic_indices[row] : row);
+}
 
 } // namespace dxmt::dxil

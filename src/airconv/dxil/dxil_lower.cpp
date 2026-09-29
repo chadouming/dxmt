@@ -19,6 +19,7 @@
 #include "../airconv_error.hpp"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/Transforms/Utils/BasicBlockUtils.h"
 
 namespace dxmt::dxil {
 
@@ -63,8 +64,9 @@ ResolveHandle(const EntryInfo &entry, llvm::Value *handle) {
   }
 }
 
-Lowering::Lowering(const EntryInfo &entry, dxbc::context &ctx) :
-    entry(entry),
+Lowering::Lowering(const DXILShader &dxil, dxbc::context &ctx) :
+    dxil(dxil),
+    entry(dxil.entry),
     ctx(ctx),
     ir(ctx.builder),
     air(ctx.air),
@@ -156,6 +158,42 @@ Lowering::Cleanup(llvm::Function &function) {
   }
 }
 
+llvm::Value *
+Lowering::UnpackedInput(uint32_t element_id) {
+  auto it = dxil.unpacked_inputs.find(element_id);
+  if (it == dxil.unpacked_inputs.end())
+    return nullptr;
+  if (it->second == kUnpackedVertexID)
+    return ctx.resource.vertex_id;
+  if (it->second == kUnpackedInstanceID)
+    return ctx.resource.instance_id;
+  return ctx.function->getArg(it->second);
+}
+
+llvm::Value *
+Lowering::UnpackedInputOfKind(SemanticKind kind) {
+  for (auto &e : entry.inputs)
+    if (e.kind == kind)
+      return UnpackedInput(e.id);
+  return nullptr;
+}
+
+llvm::Value *
+Lowering::RegisterElementPointer(dxbc::register_file &file, const SignatureElement &e, llvm::Value *row, uint32_t col) {
+  auto array_ty = llvm::cast<llvm::PointerType>(file.ptr_int4->getType())->getNonOpaquePointerElementType();
+  auto reg = ir.CreateAdd(ir.getInt32(e.start_row), row);
+  return ir.CreateGEP(array_ty, file.ptr_int4, {ir.getInt32(0), reg, ir.getInt32(e.start_col + col)});
+}
+
+namespace {
+const SignatureElement *FindElement(const std::vector<SignatureElement> &elements, uint32_t id) {
+  for (auto &e : elements)
+    if (e.id == id)
+      return &e;
+  return nullptr;
+}
+} // namespace
+
 llvm::Error
 Lowering::LowerOther(uint32_t opcode, llvm::CallInst *call) {
   auto &res = ctx.resource;
@@ -175,6 +213,76 @@ Lowering::LowerOther(uint32_t opcode, llvm::CallInst *call) {
   case op::FlattenedThreadIdInGroup:
     Replace(call, res.thread_id_in_group_flat_arg);
     return llvm::Error::success();
+  case op::LoadInput: { // (4, i32 inputSigId, i32 row, i8 col, i32 gsVertexAxis)
+    auto e = FindElement(entry.inputs, ConstantU32(call->getArgOperand(1)));
+    if (!e)
+      return llvm::make_error<UnsupportedFeature>("DXIL: loadInput names an undeclared input");
+    if (auto v = UnpackedInput(e->id)) {
+      Replace(call, Cast(v, call->getType()));
+      return llvm::Error::success();
+    }
+    auto word = ir.CreateLoad(ir.getInt32Ty(), RegisterElementPointer(res.input, *e, call->getArgOperand(2),
+                                                                     ConstantU32(call->getArgOperand(3))));
+    auto ty = call->getType();
+    Replace(call, ty->isIntegerTy(1) ? ir.CreateICmpNE(word, ir.getInt32(0)) : Cast(word, ty));
+    return llvm::Error::success();
+  }
+  case op::StoreOutput: { // (5, i32 outputSigId, i32 row, i8 col, T value)
+    auto e = FindElement(entry.outputs, ConstantU32(call->getArgOperand(1)));
+    if (!e)
+      return llvm::make_error<UnsupportedFeature>("DXIL: storeOutput names an undeclared output");
+    auto value = call->getArgOperand(4);
+    switch (e->kind) {
+    case SemanticKind::Depth:
+    case SemanticKind::DepthLessEqual:
+    case SemanticKind::DepthGreaterEqual:
+      if (res.depth_output_reg)
+        ir.CreateStore(Cast(value, ir.getFloatTy()), res.depth_output_reg);
+      break;
+    case SemanticKind::Coverage:
+      ir.CreateStore(Cast(value, ir.getInt32Ty()), res.coverage_mask_reg);
+      break;
+    case SemanticKind::StencilRef:
+      ir.CreateStore(Cast(value, ir.getInt32Ty()), res.stencil_ref_reg);
+      break;
+    default: {
+      auto word = value->getType()->isIntegerTy(1) ? ir.CreateSExt(value, ir.getInt32Ty()) : Cast(value, ir.getInt32Ty());
+      ir.CreateStore(word, RegisterElementPointer(res.output, *e, call->getArgOperand(2), ConstantU32(call->getArgOperand(3))));
+    }
+    }
+    Replace(call, nullptr);
+    return llvm::Error::success();
+  }
+  case op::Discard: { // (82, i1 condition)
+    auto cond = call->getArgOperand(1);
+    if (auto c = llvm::dyn_cast<llvm::ConstantInt>(cond); c && c->isZero()) {
+      Replace(call, nullptr);
+      return llvm::Error::success();
+    }
+    auto then = llvm::SplitBlockAndInsertIfThen(cond, call, false);
+    ir.SetInsertPoint(then);
+    air.CreateDiscard();
+    Replace(call, nullptr);
+    return llvm::Error::success();
+  }
+  case op::DerivCoarseX:
+  case op::DerivCoarseY:
+  case op::DerivFineX:
+  case op::DerivFineY:
+    Replace(call, air.CreateDerivative(call->getArgOperand(1), opcode == op::DerivCoarseY || opcode == op::DerivFineY));
+    return llvm::Error::success();
+  case op::SampleIndex:
+  case op::Coverage:
+  case op::PrimitiveID: {
+    auto kind = opcode == op::SampleIndex ? SemanticKind::SampleIndex
+                : opcode == op::Coverage  ? SemanticKind::Coverage
+                                          : SemanticKind::PrimitiveID;
+    auto v = UnpackedInputOfKind(kind);
+    if (!v)
+      return Unsupported(call);
+    Replace(call, Cast(v, call->getType()));
+    return llvm::Error::success();
+  }
   case op::Barrier: { // (80, i32 mode): 1 = sync threadgroup, 2 = UAV fence global, 4 = UAV fence threadgroup, 8 = TGSM fence
     // As airconv's DXBC sync lowering (nt/dxbc_converter_base.hpp, InstSync).
     using namespace llvm::air;

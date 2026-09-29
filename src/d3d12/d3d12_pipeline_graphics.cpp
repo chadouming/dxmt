@@ -554,6 +554,11 @@ public:
 
     bool dual_source_blending = false;
 
+    // MacNeutron: reflect the pixel shader first; InitializePSO reads ref_ps.PixelShader.HasCoverageOutput.
+    ref_ps = {};
+    if (pDesc->PS.pShaderBytecode && FAILED(hr = InitializeShader(pDesc->PS, &shader_ps, &ref_ps)))
+      return hr;
+
     if (FAILED(hr = InitializePSO(pDesc, info, dual_source_blending)))
       return hr;
 
@@ -561,9 +566,6 @@ public:
       auto sha1 = Sha1HashState::compute(pDesc->PS.pShaderBytecode, pDesc->PS.BytecodeLength);
 
       std::string ps_name = "ps_main" + sha1.string().substr(0, 8);
-
-      if (FAILED(hr = InitializeShader(pDesc->PS, &shader_ps, &ref_ps)))
-        return hr;
       SM50_SHADER_PSO_PIXEL_SHADER_DATA data_ps;
       data_ps.dual_source_blending = dual_source_blending;
       data_ps.disable_depth_output = false;

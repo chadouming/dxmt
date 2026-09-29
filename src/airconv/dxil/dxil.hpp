@@ -50,8 +50,10 @@ bool ModuleCallsOp(const llvm::Module &module, uint32_t opcode);
 // dxil_initialize.cpp: SM50Initialize's DXIL branch.
 llvm::Error InitializeDXIL(const Container &container, dxbc::SM50ShaderInternal *shader, MTL_SHADER_REFLECTION *refl);
 
-// dxil_signature.cpp: pushes the signature handlers (entry point inputs/outputs) for this stage.
-llvm::Error AddSignatureHandlers(const EntryInfo &entry, const llvm::Module &module, dxbc::SM50ShaderInternal *shader);
+// dxil_signature.cpp: pushes the signature handlers (entry point inputs/outputs) for this stage, and fills
+// `unpacked_inputs` (see DXILShader).
+llvm::Error AddSignatureHandlers(const EntryInfo &entry, const llvm::Module &module, dxbc::SM50ShaderInternal *shader,
+                                 std::map<uint32_t, uint32_t> &unpacked_inputs);
 
 // dxil_converter.cpp: SM50Compile's DXIL branch; returns the AIR module, ready for airconv's passes.
 llvm::Expected<std::unique_ptr<llvm::Module>> ConvertDXIL(

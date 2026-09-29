@@ -36,7 +36,7 @@ llvm::Expected<HandleInfo> ResolveHandle(const EntryInfo &entry, llvm::Value *ha
 // Replaces dx.op calls with AIR, one call at a time, inside the AIR entry function being built.
 class Lowering {
 public:
-  Lowering(const EntryInfo &entry, dxbc::context &ctx);
+  Lowering(const DXILShader &dxil, dxbc::context &ctx);
   // Lowers and erases `call`, or fails naming the op. Handle-producing calls are kept for Cleanup.
   llvm::Error Lower(llvm::CallInst *call);
   // Erases the handle-producing calls once nothing uses them.
@@ -65,7 +65,15 @@ private:
   llvm::Error LowerBufferStore(llvm::CallInst *call, const HandleInfo &h, llvm::Value *byte_offset, unsigned first_value, uint32_t mask);
   llvm::Error LowerTypedBufferLoad(llvm::CallInst *call, const HandleInfo &h, llvm::Value *index);
   llvm::Error LowerTypedBufferStore(llvm::CallInst *call, const HandleInfo &h, llvm::Value *index);
+  llvm::Error LowerTexture(uint32_t opcode, llvm::CallInst *call, const HandleInfo &h);
+  llvm::Error LowerDimensions(llvm::CallInst *call, const HandleInfo &h);
 
+  // IO (dxil_lower.cpp).
+  llvm::Value *UnpackedInput(uint32_t element_id);
+  llvm::Value *UnpackedInputOfKind(SemanticKind kind);
+  llvm::Value *RegisterElementPointer(dxbc::register_file &file, const SignatureElement &e, llvm::Value *row, uint32_t col);
+
+  const DXILShader &dxil;
   const EntryInfo &entry;
   dxbc::context &ctx;
   llvm::IRBuilder<> &ir;
