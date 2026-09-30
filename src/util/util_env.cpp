@@ -26,12 +26,19 @@ namespace dxmt::env {
 
 std::string getEnvVar(const char *name) {
 #ifdef _WIN32
-  std::vector<WCHAR> result;
-  result.resize(MAX_PATH + 1);
-
-  DWORD len = ::GetEnvironmentVariableW(str::tows(name).c_str(), result.data(),
-                                        MAX_PATH);
+  // MacNeutron: a value longer than the buffer comes back as the size it needs, not as text, so ask again with that
+  // size (a MAX_PATH buffer alone turned a long DXMT_DUMP_PIXEL into garbage).
+  std::wstring wide_name = str::tows(name);
+  std::vector<WCHAR> result(MAX_PATH + 1);
+  DWORD len = ::GetEnvironmentVariableW(wide_name.c_str(), result.data(), result.size());
+  if (len >= result.size()) {
+    result.resize(len);
+    len = ::GetEnvironmentVariableW(wide_name.c_str(), result.data(), result.size());
+    if (len >= result.size())
+      len = 0; // it changed in between: treat as unset
+  }
   result.resize(len);
+  result.push_back(0);
 
   return str::fromws(result.data());
 #else
