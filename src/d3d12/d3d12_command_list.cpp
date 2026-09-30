@@ -1693,8 +1693,15 @@ public:
     if (!pHeap || !pDstBuffer || !QueryCount || !PreBlit())
       return;
     auto heap = static_cast<MTLD3D12QueryHeap *>(pHeap);
+    // Timestamps reach readback (or CPU-readable custom) heaps only: a CPU write into another heap would land after the
+    // GPU work reading it.
+    D3D12_HEAP_PROPERTIES dst_heap = {};
+    pDstBuffer->GetHeapProperties(&dst_heap, nullptr);
+    bool dst_readable = dst_heap.Type == D3D12_HEAP_TYPE_READBACK ||
+                        (dst_heap.Type == D3D12_HEAP_TYPE_CUSTOM &&
+                         dst_heap.CPUPageProperty != D3D12_CPU_PAGE_PROPERTY_NOT_AVAILABLE);
     auto dst_memory = static_cast<char *>(static_cast<MTLD3D12Resource *>(pDstBuffer)->buffer->current()->mappedMemory(0));
-    if (Type == D3D12_QUERY_TYPE_TIMESTAMP && !heap->counters.empty() && dst_memory) {
+    if (Type == D3D12_QUERY_TYPE_TIMESTAMP && !heap->counters.empty() && dst_memory && dst_readable) {
       // Resolved by the queue on the CPU as the command buffer completes, straight into the destination (readback
       // heaps are CPU-visible), one job per counter buffer the range touches. See TimestampResolve.
       for (UINT i = StartIndex; i < StartIndex + QueryCount;) {

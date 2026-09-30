@@ -204,18 +204,23 @@ public:
   SIZE_T STDMETHODCALLTYPE
   GetSerializedSize() {
     std::lock_guard lock(mutex_);
+    return SerializedSize();
+  }
+
+  SIZE_T
+  SerializedSize() { // under mutex_
     SIZE_T size = 16;
     for (auto &[name, entry] : entries_)
       size += 4 + name.size() * sizeof(WCHAR) + 8;
     return size;
   }
 
+
   HRESULT STDMETHODCALLTYPE
   Serialize(void *pData, SIZE_T DataSizeInBytes) {
-    SIZE_T size = GetSerializedSize();
-    if (!pData || DataSizeInBytes < size)
+    std::lock_guard lock(mutex_); // one lock for the size and the write: a store in between would overflow pData
+    if (!pData || DataSizeInBytes < SerializedSize())
       return E_INVALIDARG;
-    std::lock_guard lock(mutex_);
     auto p = static_cast<char *>(pData);
     uint32_t version = 1, count = entries_.size();
     memcpy(p, kMagic, 8);
@@ -232,6 +237,7 @@ public:
     }
     return S_OK;
   }
+
 };
 } // namespace
 

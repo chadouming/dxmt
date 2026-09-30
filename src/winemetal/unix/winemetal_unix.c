@@ -2905,9 +2905,12 @@ _MTLCounterSampleBuffer_resolveCounterRange(void *obj) {
   struct unixcall_mtlcountersamplebuffer_resolvecounterrange *params = obj;
   id<MTLCounterSampleBuffer> sample_buffer = (id<MTLCounterSampleBuffer>)params->sample_buffer;
 
-  NSData *data = [sample_buffer resolveCounterRange:NSMakeRange(params->start, params->len)];
-  if (data && params->data_out.ptr) {
-    [data getBytes:params->data_out.ptr length:params->data_length];
+  // The NSData is autoreleased: callers' threads (a queue's completion thread) have no pool of their own.
+  @autoreleasepool {
+    NSData *data = [sample_buffer resolveCounterRange:NSMakeRange(params->start, params->len)];
+    if (data && params->data_out.ptr) {
+      [data getBytes:params->data_out.ptr length:params->data_length];
+    }
   }
   return STATUS_SUCCESS;
 }
