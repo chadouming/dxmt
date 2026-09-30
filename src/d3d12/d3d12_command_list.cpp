@@ -773,9 +773,10 @@ public:
       cmd.dst_origin = dst_origin;
       return;
     }
-    // A block of a compressed format is one texel of the other: count units (texels or blocks) of the source.
+    // A block of a compressed format is one texel of the other: count units (texels or blocks, a partial block at a
+    // mip's edge counting as one) of the source.
     uint32_t src_scale = src_bc ? 4 : 1, dst_scale = dst_bc ? 4 : 1;
-    uint32_t units_w = std::max<uint32_t>(src_size.width / src_scale, 1), units_h = std::max<uint32_t>(src_size.height / src_scale, 1);
+    uint32_t units_w = (src_size.width + src_scale - 1) / src_scale, units_h = (src_size.height + src_scale - 1) / src_scale;
     uint32_t bytes_per_row = align(units_w * src_format.BytesPerTexel, 256);
     uint32_t bytes_per_image = bytes_per_row * units_h;
     auto [temp, temp_offset] = allocator_->AllocateTempBuffer(bytes_per_image * src_size.depth, 256);
@@ -797,7 +798,10 @@ public:
     to_texture.src_offset = temp_offset;
     to_texture.bytes_per_row = bytes_per_row;
     to_texture.bytes_per_image = bytes_per_image;
-    to_texture.size = {units_w * dst_scale, units_h * dst_scale, src_size.depth};
+    // In the destination's texels, within its mip (a partial block at the edge).
+    uint32_t dst_width = std::max(dst->width() >> dst_level, 1u), dst_height = std::max(dst->height() >> dst_level, 1u);
+    to_texture.size = {std::min<uint32_t>(units_w * dst_scale, dst_width - dst_origin.x),
+                       std::min<uint32_t>(units_h * dst_scale, dst_height - dst_origin.y), src_size.depth};
     to_texture.dst = dst->current()->texture();
     to_texture.level = dst_level;
     to_texture.slice = dst_slice;
@@ -913,7 +917,8 @@ public:
         }
         auto src_planar_count = src_format.PlanarCount;
 
-        if (src->pixelFormat() != dst->pixelFormat()) { // formats D3D12 lets reinterpret (MacNeutron)
+        // Formats D3D12 lets reinterpret (MacNeutron); plane copies of depth-stencil textures take the path below.
+        if (src->pixelFormat() != dst->pixelFormat() && src_planar_count == 1 && dst_planar_count == 1) {
           CopyReinterpret(src.ptr(), src_format, src_level, src_slice, {src_box.left, src_box.top, src_box.front},
                           {src_box.right - src_box.left, src_box.bottom - src_box.top, src_box.back - src_box.front},
                           dst.ptr(), dst_format, dst_level, dst_slice, {DstX, DstY, DstZ});
