@@ -131,14 +131,32 @@ LowerBody(const DXILShader &dxil, struct context &ctx, llvm::Function *dxil_main
     blocks.push_back(&bb);
   ctx.function->getBasicBlockList().splice(ctx.function->end(), dxil_main->getBasicBlockList());
   std::vector<llvm::CallInst *> calls; // collected first: lowering erases them
+  // DXC marks most float math `fast`. D3D keeps NaN and infinity, so no stage assumes them away, and compares keep no
+  // fast flag at all (Metal's compiler treats any as leave to ignore NaN: (x < y) || (x >= y) came out true for a NaN).
+  // As airconv's DXBC path (Converter::UseFastMath), pre-raster stages neither reassociate, fuse nor use reciprocals,
+  // so a depth prepass and a base pass compute the same positions (their depth EQUAL test holds). (MacNeutron)
+  bool pre_raster = dxil.entry.kind == ShaderKind::Vertex || dxil.entry.kind == ShaderKind::Geometry ||
+                    dxil.entry.kind == ShaderKind::Hull || dxil.entry.kind == ShaderKind::Domain;
   for (auto *bb : blocks) {
     if (auto ret = llvm::dyn_cast_or_null<llvm::ReturnInst>(bb->getTerminator())) {
       llvm::BranchInst::Create(epilogue, ret);
       ret->eraseFromParent();
     }
-    for (auto &inst : *bb)
+    for (auto &inst : *bb) {
+      if (llvm::isa<llvm::FCmpInst>(&inst)) {
+        inst.copyFastMathFlags(llvm::FastMathFlags());
+      } else if (llvm::isa<llvm::FPMathOperator>(&inst)) {
+        inst.setHasNoNaNs(false);
+        inst.setHasNoInfs(false);
+        if (pre_raster) {
+          inst.setHasAllowReassoc(false);
+          inst.setHasAllowContract(false);
+          inst.setHasAllowReciprocal(false);
+        }
+      }
       if (auto call = llvm::dyn_cast<llvm::CallInst>(&inst); call && OpCode(*call) != ~0u)
         calls.push_back(call);
+    }
   }
   Lowering lowering(dxil, ctx, vertex_outputs);
   for (auto *call : calls)
