@@ -390,6 +390,9 @@ public:
           rt.store_action = WMTStoreActionStore;
         }
         render->dsv_planar_flags = dsv_planar_flags;
+        // D3D12_DSV_FLAG_READ_ONLY_DEPTH (1) and _STENCIL (2) are GetDepthStencilState's read-only bits.
+        render->dsv_readonly_flags =
+            AttachmentDesc.Flags & (D3D12_DSV_FLAG_READ_ONLY_DEPTH | D3D12_DSV_FLAG_READ_ONLY_STENCIL);
         render_target_width = std::min(render_target_width, AttachmentDesc.Width);
         render_target_height = std::min(render_target_height, AttachmentDesc.Height);
         render_target_array_length = std::max(render_target_array_length, AttachmentDesc.RenderTargetArrayLength);
