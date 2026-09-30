@@ -1346,3 +1346,29 @@ MTLSharedEvent_setWin32EventAtValues(
   params.event_handle = (obj_handle_t)PtrToUInt64(nt_event_handle);
   UNIX_CALL(146, &params);
 }
+
+WINEMETAL_API obj_handle_t
+MTLCommandBuffer_computeCommandEncoderWithSampleBuffers(
+    obj_handle_t cmdbuf, bool concurrent, struct WMTSampleBufferAttachmentInfo *sample_buffer_attachments,
+    uint64_t num_sample_buffer_attachments
+) {
+  struct unixcall_mtlcommandbuffer_computecommandencoderwithsamplebuffers params;
+  params.cmdbuf = cmdbuf;
+  WMT_MEMPTR_SET(params.attachments, sample_buffer_attachments);
+  params.num_attachments = num_sample_buffer_attachments;
+  params.concurrent = concurrent;
+  params.ret = 0;
+  UNIX_CALL(147, &params);
+  return params.ret;
+}
+
+WINEMETAL_API void
+MTLDevice_sampleTimestamps(obj_handle_t device, uint64_t *cpu_timestamp, uint64_t *gpu_timestamp) {
+  struct unixcall_mtldevice_sampletimestamps params;
+  params.device = device;
+  params.cpu = 0;
+  params.gpu = 0;
+  UNIX_CALL(148, &params);
+  *cpu_timestamp = params.cpu;
+  *gpu_timestamp = params.gpu;
+}

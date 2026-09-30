@@ -685,6 +685,12 @@ struct WMTStencilAttachmentInfo {
   uint8_t clear_stencil;
 };
 
+// A timestamp sampled at the end of a render pass (MacNeutron; D3D12 timestamps). Unused when sample_buffer is 0.
+struct WMTRenderPassSampleBufferInfo {
+  obj_handle_t sample_buffer;
+  uint64_t end_of_fragment_sample_index;
+};
+
 struct WMTRenderPassInfo {
   struct WMTColorAttachmentInfo colors[8];
   struct WMTDepthAttachmentInfo depth;
@@ -697,6 +703,7 @@ struct WMTRenderPassInfo {
   uint32_t render_target_width;
   uint8_t visibility_accumulate; // MacNeutron: visibility results add to the buffer instead of replacing it
   obj_handle_t visibility_buffer;
+  struct WMTRenderPassSampleBufferInfo sample_buffers[4];
 };
 
 WINEMETAL_API obj_handle_t MTLCommandBuffer_renderCommandEncoder(obj_handle_t cmdbuf, struct WMTRenderPassInfo *info);
@@ -2028,6 +2035,15 @@ WINEMETAL_API obj_handle_t MTLCommandBuffer_blitCommandEncoderWithSampleBuffers(
     obj_handle_t cmdbuf, struct WMTSampleBufferAttachmentInfo *sample_buffer_attachments,
     uint64_t num_sample_buffer_attachments
 );
+
+// MacNeutron (D3D12 timestamps): a compute encoder whose pass samples counters (an index of ~0 samples nothing),
+// and Metal's CPU and GPU clocks read together.
+WINEMETAL_API obj_handle_t MTLCommandBuffer_computeCommandEncoderWithSampleBuffers(
+    obj_handle_t cmdbuf, bool concurrent, struct WMTSampleBufferAttachmentInfo *sample_buffer_attachments,
+    uint64_t num_sample_buffer_attachments
+);
+
+WINEMETAL_API void MTLDevice_sampleTimestamps(obj_handle_t device, uint64_t *cpu_timestamp, uint64_t *gpu_timestamp);
 
 enum WMTCommandBufferProperty : uint32_t {
   WMTCommandBufferPropertyKernelStartTime,

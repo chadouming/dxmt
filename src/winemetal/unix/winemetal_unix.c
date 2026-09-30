@@ -460,6 +460,16 @@ _MTLCommandBuffer_renderCommandEncoder(void *obj) {
   descriptor.renderTargetHeight = info->render_target_height;
   descriptor.renderTargetWidth = info->render_target_width;
   descriptor.visibilityResultBuffer = (id<MTLBuffer>)info->visibility_buffer;
+  for (unsigned i = 0; i < 4; i++) { // timestamps at the pass's end (MacNeutron)
+    if (!info->sample_buffers[i].sample_buffer)
+      continue;
+    MTLRenderPassSampleBufferAttachmentDescriptor *sample = descriptor.sampleBufferAttachments[i];
+    sample.sampleBuffer = (id<MTLCounterSampleBuffer>)info->sample_buffers[i].sample_buffer;
+    sample.startOfVertexSampleIndex = MTLCounterDontSample;
+    sample.endOfVertexSampleIndex = MTLCounterDontSample;
+    sample.startOfFragmentSampleIndex = MTLCounterDontSample;
+    sample.endOfFragmentSampleIndex = info->sample_buffers[i].end_of_fragment_sample_index;
+  }
   if (info->visibility_accumulate) {
     if (@available(macOS 14.0, *))
       descriptor.visibilityResultType = MTLVisibilityResultTypeAccumulate;
@@ -2903,6 +2913,37 @@ _MTLCounterSampleBuffer_resolveCounterRange(void *obj) {
 }
 
 static NTSTATUS
+_MTLCommandBuffer_computeCommandEncoderWithSampleBuffers(void *obj) {
+  struct unixcall_mtlcommandbuffer_computecommandencoderwithsamplebuffers *params = obj;
+  id<MTLCommandBuffer> cmdbuf = (id<MTLCommandBuffer>)params->cmdbuf;
+  struct WMTSampleBufferAttachmentInfo *attachments = params->attachments.ptr;
+
+  MTLComputePassDescriptor *compute_desc = [[MTLComputePassDescriptor alloc] init];
+  compute_desc.dispatchType = params->concurrent ? MTLDispatchTypeConcurrent : MTLDispatchTypeSerial;
+  for (uint64_t i = 0; i < params->num_attachments; i++) {
+    MTLComputePassSampleBufferAttachmentDescriptor *desc = compute_desc.sampleBufferAttachments[i];
+    desc.sampleBuffer = (id<MTLCounterSampleBuffer>)attachments[i].sample_buffer;
+    desc.startOfEncoderSampleIndex = attachments[i].start_of_encoder_sample_index;
+    desc.endOfEncoderSampleIndex = attachments[i].end_of_encoder_sample_index;
+  }
+
+  params->ret = (obj_handle_t)[cmdbuf computeCommandEncoderWithDescriptor:compute_desc];
+
+  [compute_desc release];
+  return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+_MTLDevice_sampleTimestamps(void *obj) {
+  struct unixcall_mtldevice_sampletimestamps *params = obj;
+  MTLTimestamp cpu = 0, gpu = 0;
+  [(id<MTLDevice>)params->device sampleTimestamps:&cpu gpuTimestamp:&gpu];
+  params->cpu = cpu;
+  params->gpu = gpu;
+  return STATUS_SUCCESS;
+}
+
+static NTSTATUS
 _MTLCommandBuffer_blitCommandEncoderWithSampleBuffers(void *obj) {
   struct unixcall_mtlcommandbuffer_blitcommandencoderwithsamplebuffers *params = obj;
   id<MTLCommandBuffer> cmdbuf = (id<MTLCommandBuffer>)params->cmdbuf;
@@ -3360,6 +3401,8 @@ const void *__wine_unix_call_funcs[] = {
     &_MTLDevice_newLibraryWithSource,
     &_MTLTexture_getBytes,
     &_MTLSharedEvent_setWin32EventAtValues,
+    &_MTLCommandBuffer_computeCommandEncoderWithSampleBuffers,
+    &_MTLDevice_sampleTimestamps,
 };
 
 #ifndef DXMT_NATIVE
@@ -3511,5 +3554,7 @@ const void *__wine_unix_call_wow64_funcs[] = {
     &_MTLDevice_newLibraryWithSource,
     &_MTLTexture_getBytes,
     &_MTLSharedEvent_setWin32EventAtValues,
+    &_MTLCommandBuffer_computeCommandEncoderWithSampleBuffers,
+    &_MTLDevice_sampleTimestamps,
 };
 #endif

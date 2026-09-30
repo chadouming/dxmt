@@ -182,7 +182,13 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
   struct InflightCommandBuffer {
     WMT::Reference<WMT::CommandBuffer> cmdbuf{};
     HANDLE semaphore{};
+    // Done on the CPU once it completes (MacNeutron): timestamp resolves, then the fence signals deferred behind
+    // them, so no fence reports the work done before its timestamps are written.
+    std::vector<TimestampResolve> resolves{};
+    std::vector<std::pair<Rc<Fence>, uint64_t>> signals{};
   };
+  // Command buffers still owing CPU work: while there are any, fence signals go behind them.
+  std::atomic_uint32_t cpu_work_ = 0;
 
   std::array<InflightCommandBuffer, kCommandQueueSize> inflight_cmdbuf_pool_;
   dxmt::thread inflight_cmdbuf_wait_thread_;
@@ -208,6 +214,17 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
 
       if (inflight.semaphore)
         ReleaseSemaphore(inflight.semaphore, 1, nullptr);
+
+      if (!inflight.resolves.empty() || !inflight.signals.empty()) {
+        for (auto &r : inflight.resolves) {
+          MTLCounterSampleBuffer_resolveCounterRange(r.samples, r.start, r.count, r.dst, r.count * sizeof(uint64_t));
+          for (auto [slot, sample] : r.aliases)
+            MTLCounterSampleBuffer_resolveCounterRange(r.samples, sample, 1, (uint64_t *)r.dst + slot, sizeof(uint64_t));
+        }
+        for (auto &[fence, value] : inflight.signals)
+          fence->signal(value);
+        cpu_work_.fetch_sub(1, std::memory_order_release);
+      }
 
       inflight = {};
 
@@ -346,6 +363,13 @@ public:
     bool dumping = Dumps().frames == Dumps().frame;
     for (unsigned i = 0; i < Count; i++) {
       auto pCommandList = static_cast<MTLD3D12GraphicsCommandList *>(ppCommandLists[i]);
+      if (!pCommandList->timestamp_resolves.empty()) {
+        if (scope.inflight.resolves.empty())
+          cpu_work_.fetch_add(1, std::memory_order_relaxed);
+        scope.inflight.resolves.insert(
+            scope.inflight.resolves.end(), pCommandList->timestamp_resolves.begin(), pCommandList->timestamp_resolves.end()
+        );
+      }
       EncoderData *current = pCommandList->entry;
       while (current) {
         switch (current->type) {
@@ -439,6 +463,8 @@ public:
             render_pass_info.render_target_height = data->render_target_height;
             render_pass_info.visibility_buffer = data->visibility_buffer;
             render_pass_info.visibility_accumulate = data->visibility_buffer != 0;
+            for (unsigned i = 0; i < data->num_samples; i++)
+              render_pass_info.sample_buffers[i] = {data->samples[i].buffer, data->samples[i].index};
           }
           auto encoder = cmdbuf.renderCommandEncoder(render_pass_info);
           // Geometry shader draws (MacNeutron) read resources in the object and mesh stages too.
@@ -450,7 +476,11 @@ public:
         }
         case EncoderType::Blit: {
           auto data = static_cast<BlitEncoderData *>(current);
-          auto encoder = cmdbuf.blitCommandEncoder();
+          WMTSampleBufferAttachmentInfo samples[4];
+          for (unsigned i = 0; i < data->num_samples; i++)
+            samples[i] = {data->samples[i].buffer, ~0ull, data->samples[i].index};
+          auto encoder = data->num_samples ? cmdbuf.blitCommandEncoderWithSampleBuffers(samples, data->num_samples)
+                                           : cmdbuf.blitCommandEncoder();
           encoder.waitForFence(fence_);
           encoder.encodeCommands(&data->cmd_head);
           encoder.updateFence(fence_);
@@ -459,7 +489,11 @@ public:
         }
         case EncoderType::Compute: {
           auto data = static_cast<ComputeEncoderData *>(current);
-          auto encoder = cmdbuf.computeCommandEncoder(false);
+          WMTSampleBufferAttachmentInfo samples[4];
+          for (unsigned i = 0; i < data->num_samples; i++)
+            samples[i] = {data->samples[i].buffer, ~0ull, data->samples[i].index};
+          auto encoder = data->num_samples ? cmdbuf.computeCommandEncoderWithSampleBuffers(false, samples, data->num_samples)
+                                           : cmdbuf.computeCommandEncoder(false);
           encoder.waitForFence(fence_);
           encoder.encodeCommands(&data->cmd_head);
           encoder.updateFence(fence_);
@@ -502,7 +536,14 @@ public:
   Signal(ID3D12Fence *pFence, UINT64 Value) {
     auto scope = StartCommitting();
     auto &cmdbuf = scope.inflight.cmdbuf;
-    static_cast<MTLD3D12Fence *>(pFence)->fence->signal(cmdbuf, Value);
+    auto &fence = static_cast<MTLD3D12Fence *>(pFence)->fence;
+    if (cpu_work_.load(std::memory_order_acquire)) { // behind timestamps still to be written: signal once they are
+      if (scope.inflight.signals.empty())
+        cpu_work_.fetch_add(1, std::memory_order_relaxed);
+      scope.inflight.signals.push_back({fence, Value});
+      return S_OK;
+    }
+    fence->signal(cmdbuf, Value);
     return S_OK;
   };
 
@@ -516,21 +557,24 @@ public:
 
   HRESULT STDMETHODCALLTYPE
   GetTimestampFrequency(UINT64 *pFrequency) {
-    // FIXME: stub
-    if (pFrequency)
-      *pFrequency = 1;
+    if (!pFrequency)
+      return E_INVALIDARG;
+    *pFrequency = device_->TimestampFrequency();
     return S_OK;
   };
 
   HRESULT STDMETHODCALLTYPE
   GetClockCalibration(UINT64 *gpu_timestamp, UINT64 *cpu_timestamp) {
-    // FIXME: stub matching GetTimestampFrequency. Unreal Engine treats a failure here as fatal.
-    LARGE_INTEGER now;
-    QueryPerformanceCounter(&now);
+    // Metal's GPU clock with QueryPerformanceCounter read on either side (Unreal treats a failure here as fatal).
+    LARGE_INTEGER before, after;
+    uint64_t cpu, gpu;
+    QueryPerformanceCounter(&before);
+    device_->GetMTLDevice().sampleTimestamps(cpu, gpu);
+    QueryPerformanceCounter(&after);
     if (gpu_timestamp)
-      *gpu_timestamp = 0;
+      *gpu_timestamp = gpu;
     if (cpu_timestamp)
-      *cpu_timestamp = now.QuadPart;
+      *cpu_timestamp = before.QuadPart + (after.QuadPart - before.QuadPart) / 2;
     return S_OK;
   };
 

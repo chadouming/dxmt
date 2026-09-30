@@ -40,10 +40,22 @@
 
 namespace dxmt {
 
+// A timestamp resolve the queue does on the CPU once its command buffer completes (MacNeutron): Apple GPUs write
+// stage-boundary counter samples late, so a GPU resolve in the same command buffer can read them unwritten.
+struct TimestampResolve {
+  obj_handle_t samples; // a query heap's counter sample buffer
+  uint32_t start;
+  uint32_t count;
+  void *dst; // the destination buffer's CPU-visible memory
+  // Queries that took another's sample (the same pass end): {slot in dst, sample index}.
+  std::vector<std::pair<uint32_t, uint32_t>> aliases;
+};
+
 class MTLD3D12GraphicsCommandList : public ID3D12GraphicsCommandList2 {
 public:
   EncoderData *entry;
   size_t encoder_count = 0; // SIZE_MAX while recording
+  std::vector<TimestampResolve> timestamp_resolves;
 };
 
 class MTLD3D12CommandAllocator : public ID3D12CommandAllocator {
@@ -128,7 +140,14 @@ public:
   // visibility results) accumulate here across render passes until a resolve copies them out and zeroes them.
   WMT::Reference<WMT::Buffer> results;
   uint32_t stride = 8;
+  // A timestamp heap's queries, one sample each, in counter sample buffers of kTimestampsPerBuffer (Metal's size
+  // limit); empty when the device can't sample, and timestamps then resolve to zeros.
+  std::vector<WMT::Reference<WMT::CounterSampleBuffer>> counters;
+  // Per query: the sample it shares (Metal writes one sample per buffer per pass), or ~0u for its own.
+  std::vector<uint32_t> aliases;
 };
+
+constexpr uint32_t kTimestampsPerBuffer = 4096;
 
 class MTLD3D12PipelineState : public ID3D12PipelineState {
 public:
@@ -193,6 +212,9 @@ public:
   // use. Null UAV textures stay nil (Metal: reads zero, writes discarded).
   virtual std::pair<Texture *, TextureViewKey> NullTexture(WMTTextureType type) = 0;
   virtual std::pair<Buffer *, BufferViewKey> NullTexelBuffer() = 0;
+
+  // GPU timestamp ticks per second (MacNeutron), measured once against QueryPerformanceCounter.
+  virtual uint64_t TimestampFrequency() = 0;
 
   virtual HRESULT UnregisterResidencyAndVA(BufferAllocation *allocation) = 0;
 

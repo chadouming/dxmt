@@ -36,6 +36,12 @@ struct EncoderData {
   EncoderType type;
   EncoderData *next = nullptr;
   uint64_t id;
+  // Timestamps written at this encoder's end (MacNeutron; Metal samples counters only at stage boundaries).
+  struct {
+    obj_handle_t buffer;
+    uint32_t index;
+  } samples[4];
+  uint8_t num_samples = 0;
 };
 
 struct ClearEncoderData : EncoderData {

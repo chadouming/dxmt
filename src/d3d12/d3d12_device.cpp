@@ -27,6 +27,7 @@
 #include "dxmt_format.hpp"
 #include "log/log.hpp"
 #include <map>
+#include <mutex>
 #include "d3d10_1.h"
 #include "d3d11_4.h"
 
@@ -265,6 +266,8 @@ class MTLD3D12DeviceImpl : public MTLD3D12Object<ComObject<MTLD3D12Device>> {
   bool advertise_numa_ = false;
 
   dxmt::mutex residency_lock_;
+  std::once_flag timestamp_once_;
+  uint64_t timestamp_frequency_ = 1;
   dxmt::mutex null_lock_;
   std::map<WMTTextureType, Rc<Texture>> null_textures_;
   Rc<Buffer> null_buffer_;
@@ -1512,6 +1515,26 @@ public:
       }
     }
     return {texture.ptr(), texture->fullView};
+  }
+
+  uint64_t
+  TimestampFrequency() {
+    // GPU ticks against QueryPerformanceCounter (a known rate) 10 ms apart, once.
+    std::call_once(timestamp_once_, [&] {
+      uint64_t cpu0, gpu0, cpu1, gpu1;
+      LARGE_INTEGER q0, q1, qf;
+      QueryPerformanceFrequency(&qf);
+      QueryPerformanceCounter(&q0);
+      GetMTLDevice().sampleTimestamps(cpu0, gpu0);
+      Sleep(10);
+      QueryPerformanceCounter(&q1);
+      GetMTLDevice().sampleTimestamps(cpu1, gpu1);
+      timestamp_frequency_ =
+          gpu1 > gpu0 && q1.QuadPart > q0.QuadPart
+              ? (uint64_t)((double)(gpu1 - gpu0) * qf.QuadPart / (q1.QuadPart - q0.QuadPart) + 0.5)
+              : 1;
+    });
+    return timestamp_frequency_;
   }
 
   std::pair<Buffer *, BufferViewKey>

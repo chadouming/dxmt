@@ -699,6 +699,13 @@ public:
     return ComputeCommandEncoder{MTLCommandBuffer_computeCommandEncoder(handle, concurrent)};
   }
 
+  ComputeCommandEncoder
+  computeCommandEncoderWithSampleBuffers(bool concurrent, WMTSampleBufferAttachmentInfo *attachments, uint64_t num_attachments) {
+    return ComputeCommandEncoder{
+        MTLCommandBuffer_computeCommandEncoderWithSampleBuffers(handle, concurrent, attachments, num_attachments)
+    };
+  }
+
   void
   presentDrawable(MetalDrawable drawable) {
     MTLCommandBuffer_presentDrawable(handle, drawable);
@@ -986,6 +993,11 @@ public:
   Reference<Texture>
   newSharedTexture(WMTTextureInfo &info) {
     return Reference<Texture>(MTLDevice_newSharedTexture(handle, &info));
+  }
+
+  void
+  sampleTimestamps(uint64_t &cpu, uint64_t &gpu) {
+    MTLDevice_sampleTimestamps(handle, &cpu, &gpu);
   }
 
   Reference<CounterSampleBuffer>

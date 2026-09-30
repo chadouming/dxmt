@@ -381,6 +381,20 @@ struct unixcall_mtlcountersamplebuffer_resolvecounterrange {
   uint64_t data_length;
 };
 
+struct unixcall_mtlcommandbuffer_computecommandencoderwithsamplebuffers {
+  obj_handle_t cmdbuf;
+  struct WMTMemoryPointer attachments;
+  uint64_t num_attachments;
+  uint64_t concurrent;
+  obj_handle_t ret;
+};
+
+struct unixcall_mtldevice_sampletimestamps {
+  obj_handle_t device;
+  uint64_t cpu;
+  uint64_t gpu;
+};
+
 struct unixcall_mtlcommandbuffer_blitcommandencoderwithsamplebuffers {
   obj_handle_t cmdbuf;
   struct WMTMemoryPointer attachments;

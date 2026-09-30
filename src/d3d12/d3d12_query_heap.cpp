@@ -49,6 +49,19 @@ public:
     if (!results || !info.memory.get_accessible_or_null())
       return E_OUTOFMEMORY;
     memset(info.memory.get_accessible_or_null(), 0, info.length);
+    if (pDesc->Type == D3D12_QUERY_HEAP_TYPE_TIMESTAMP) {
+      auto metal = device_->GetMTLDevice();
+      for (uint32_t first = 0; first < pDesc->Count; first += kTimestampsPerBuffer) {
+        // Shared: the queue resolves it on the CPU once the samples are written (see TimestampResolve).
+        auto samples = metal.newCounterSampleBuffer(std::min(kTimestampsPerBuffer, pDesc->Count - first), true);
+        if (!samples) { // no stage-boundary sampling: timestamps resolve to zeros, as before
+          counters.clear();
+          break;
+        }
+        counters.push_back(std::move(samples));
+      }
+      aliases.assign(pDesc->Count, ~0u);
+    }
     return S_OK;
   }
 

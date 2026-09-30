@@ -249,6 +249,7 @@ public:
     ResetState(pInitialPipelineState);
 
     encoder_count = std::numeric_limits<size_t>::max();
+    timestamp_resolves.clear();
     return allocator_->StartRecord(&entry);
   }
 
@@ -1629,8 +1630,50 @@ public:
     query_dirty_ = true;
   };
 
+  // A timestamp is sampled at an encoder boundary (MacNeutron): the end of the open render pass (never split: a
+  // timestamp between draws reads its pass's end), else the end of the open blit or compute encoder, which then
+  // closes, or an empty blit encoder's end.
+  void
+  EndTimestamp(MTLD3D12QueryHeap *heap, UINT Index) {
+    if (heap->counters.empty() || Index / kTimestampsPerBuffer >= heap->counters.size())
+      return;
+    auto buffer = heap->counters[Index / kTimestampsPerBuffer].handle;
+    auto current = allocator_->encoder_current;
+    bool render = current && current->type == EncoderType::Render;
+    heap->aliases[Index] = ~0u;
+    if (render) // Metal writes one sample per buffer per pass: a second timestamp at this pass's end shares it
+      for (unsigned i = 0; i < current->num_samples; i++)
+        if (current->samples[i].buffer == buffer) {
+          heap->aliases[Index] = Index / kTimestampsPerBuffer * kTimestampsPerBuffer + current->samples[i].index;
+          return;
+        }
+    if (!render && (!current || (current->type != EncoderType::Blit && current->type != EncoderType::Compute))) {
+      PreBlit();
+      current = allocator_->encoder_current;
+      // Metal drops an empty encoder, samples included: give it one real command (4 bytes of the heap's unused
+      // results buffer).
+      auto &fill = allocator_->EncodeBlitCommand<wmtcmd_blit_fillbuffer>();
+      fill.type = WMTBlitCommandFillBuffer;
+      fill.buffer = heap->results.handle;
+      fill.offset = Index * sizeof(UINT64);
+      fill.length = 4;
+      fill.value = 0;
+    }
+    if (current->num_samples == std::size(current->samples)) { // four per encoder: an empty blit encoder takes more
+      allocator_->InvalidateCurrentPass();
+      PreBlit();
+      current = allocator_->encoder_current;
+      render = false;
+    }
+    current->samples[current->num_samples++] = {buffer, Index % kTimestampsPerBuffer};
+    if (!render)
+      allocator_->InvalidateCurrentPass(); // later work goes to a new encoder, so this sample marks this point
+  }
+
   void STDMETHODCALLTYPE
   EndQuery(ID3D12QueryHeap *pHeap, D3D12_QUERY_TYPE Type, UINT Index) {
+    if (Type == D3D12_QUERY_TYPE_TIMESTAMP && pHeap)
+      return EndTimestamp(static_cast<MTLD3D12QueryHeap *>(pHeap), Index);
     if (Type != D3D12_QUERY_TYPE_OCCLUSION && Type != D3D12_QUERY_TYPE_BINARY_OCCLUSION)
       return;
     query_heap_ = nullptr;
@@ -1645,6 +1688,26 @@ public:
     if (!pHeap || !pDstBuffer || !QueryCount || !PreBlit())
       return;
     auto heap = static_cast<MTLD3D12QueryHeap *>(pHeap);
+    auto dst_memory = static_cast<char *>(static_cast<MTLD3D12Resource *>(pDstBuffer)->buffer->current()->mappedMemory(0));
+    if (Type == D3D12_QUERY_TYPE_TIMESTAMP && !heap->counters.empty() && dst_memory) {
+      // Resolved by the queue on the CPU as the command buffer completes, straight into the destination (readback
+      // heaps are CPU-visible), one job per counter buffer the range touches. See TimestampResolve.
+      for (UINT i = StartIndex; i < StartIndex + QueryCount;) {
+        UINT chunk = i / kTimestampsPerBuffer, first = i % kTimestampsPerBuffer;
+        UINT n = std::min<UINT>(kTimestampsPerBuffer - first, StartIndex + QueryCount - i);
+        if (chunk >= heap->counters.size())
+          break;
+        TimestampResolve job{heap->counters[chunk].handle, first, n,
+                             dst_memory + AlignedDstBufferOffset + (i - StartIndex) * sizeof(UINT64)};
+        for (UINT q = i; q < i + n; q++)
+          if (heap->aliases[q] != ~0u)
+            job.aliases.push_back({q - i, heap->aliases[q] % kTimestampsPerBuffer});
+        timestamp_resolves.push_back(std::move(job));
+        i += n;
+      }
+      return;
+    }
+    // ponytail: a timestamp resolve into GPU-only memory gets zeros; resolve into a readback buffer
     auto &copy = allocator_->EncodeBlitCommand<wmtcmd_blit_copy_from_buffer_to_buffer>();
     copy.type = WMTBlitCommandCopyFromBufferToBuffer;
     copy.src = heap->results.handle;
