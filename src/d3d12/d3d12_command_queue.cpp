@@ -73,14 +73,17 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
     uint64_t bytes = 0;
     std::vector<PassDump> dumps;
     std::string log;
-    // Pixel history (DXMT_DUMP_PIXEL=<x>,<y>[,<first pass>,<last pass>]): each draw of the dumped frame's render passes
-    // redrawn alone into scratch attachments, from the pass's starting state; pixels.txt lists the draws that change
-    // the pixel, with their pipeline. Alone: a draw an earlier draw of the pass would hide is listed too. The redraws
-    // are full size: narrow the passes for a big frame.
-    bool pixel_on = false;
+    // Pixel history (DXMT_DUMP_PIXEL=<x>,<y>[,<first pass>,<last pass>[,seq]]): each draw of the dumped frame's render
+    // passes redrawn into scratch attachments, from the pass's starting state; pixels.txt lists the draws that change
+    // the pixel, with their pipeline, and draws.txt every draw of the passes redrawn. Alone by default (a draw an
+    // earlier draw would hide is listed too); with seq, each draw on top of the pass's earlier ones, as the pass draws
+    // them (quadratic in the pass's draws). The redraws are full size: narrow the passes for a big frame.
+    bool pixel_on = false, pixel_seq = false;
+    std::string pixel_notes, pixel_draws;
     uint32_t pixel_x = 0, pixel_y = 0, pixel_first = 0, pixel_last = ~0u;
     struct PixelPass {
       std::string pass;
+      bool seq = false;
       std::vector<std::string> draws;       // each draw's pipeline
       std::vector<uint32_t> colors, texels; // the color attachments watched, and their texel sizes
       WMT::Reference<WMT::Buffer> buffer;   // 16 bytes per color: the pass without draws, then each draw alone
@@ -99,8 +102,10 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
       } catch (const std::invalid_argument &) {
       }
       unsigned x, y, first, last;
-      int fields = sscanf(env::getEnvVar("DXMT_DUMP_PIXEL").c_str(), "%u,%u,%u,%u", &x, &y, &first, &last);
-      if (fields == 2 || fields == 4) {
+      char mode[4] = {};
+      int fields = sscanf(env::getEnvVar("DXMT_DUMP_PIXEL").c_str(), "%u,%u,%u,%u,%3s", &x, &y, &first, &last, mode);
+      if (fields == 2 || fields == 4 || fields == 5) {
+        pixel_seq = fields == 5 && !strcmp(mode, "seq");
         pixel_on = true;
         pixel_x = x;
         pixel_y = y;
@@ -193,8 +198,11 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
     auto &d = Dumps();
     std::lock_guard<std::mutex> lock(d.mutex);
     uint32_t pass = d.passes; // DumpPass numbers this pass once it is encoded
-    if (!d.pixel_on || pass < d.pixel_first || pass > d.pixel_last || data->render_target_array_length > 1)
+    if (!d.pixel_on || pass < d.pixel_first || pass > d.pixel_last)
       return;
+    auto skipped = [&](const char *why) { d.pixel_notes += "# pass-" + std::to_string(pass) + " not redrawn: " + why + "\n"; };
+    if (data->render_target_array_length > 1)
+      return skipped("layered");
     const uint32_t x = d.pixel_x, y = d.pixel_y;
     // The draws, each under the pipeline set before it; and the visibility commands, which mustn't count into a
     // query heap on a redraw.
@@ -234,6 +242,8 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
     }
     if (draws.empty())
       return;
+    for (size_t k = 0; k < names.size(); k++)
+      d.pixel_draws += "pass-" + std::to_string(pass) + " draw-" + std::to_string(k) + " " + names[k] + "\n";
 
     auto metal = device_->GetMTLDevice();
     auto scratch = [&](WMTPixelFormat format, uint64_t width, uint64_t height) {
@@ -273,12 +283,12 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
         continue;
       if (c.attachment->allocation && c.attachment->allocation->descriptor &&
           c.attachment->allocation->descriptor->sampleCount() > 1)
-        return; // ponytail: no pixel history in multisampled passes
+        return skipped("multisampled"); // ponytail: no pixel history in multisampled passes
       auto texture = c.attachment.texture();
       uint64_t width = std::max<uint64_t>(1, texture.width() >> c.level);
       uint64_t height = std::max<uint64_t>(1, texture.height() >> c.level);
       if (x >= width || y >= height)
-        return; // the pixel lies outside this pass
+        return skipped("the pixel lies outside");
       auto format = texture.pixelFormat();
       colors.push_back({texture, c.slice, c.level, c.depth_plane, scratch(format, width, height), scratch(format, 1, 1)});
       auto &color = info.colors[i];
@@ -292,7 +302,7 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
       record.texels.push_back(MTLGetTexelSize(format));
     }
     if (colors.empty())
-      return; // ponytail: colors only; a depth-only pass shows no history
+      return skipped("no color attachment"); // ponytail: colors only
     // Depth and stencil (one texture in D3D12) are copied whole: Metal copies depth-stencil textures whole.
     WMT::Texture depth_texture = {};
     WMT::Reference<WMT::Texture> depth_scratch, depth_before;
@@ -300,7 +310,7 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
     uint64_t depth_width = 0, depth_height = 0;
     if (data->stencil.attachment &&
         (!data->depth.attachment || data->stencil.attachment.texture().handle != data->depth.attachment.texture().handle))
-      return; // ponytail: a separate stencil texture isn't redrawn
+      return skipped("separate stencil texture"); // ponytail: not redrawn
     if (data->depth.attachment) {
       depth_texture = data->depth.attachment.texture();
       depth_slice = data->depth.slice;
@@ -327,7 +337,8 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
     record.info.memory.set(0);
     record.buffer = metal.newBuffer(record.info);
     if (!record.buffer || !record.info.memory.get_accessible_or_null())
-      return;
+      return skipped("no readback buffer");
+    record.seq = d.pixel_seq;
 
     auto copy = [&](WMT::BlitCommandEncoder &blit, obj_handle_t src, uint32_t slice, uint32_t level, WMTOrigin from,
                     WMTSize size, obj_handle_t dst, WMTOrigin to) {
@@ -374,7 +385,8 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
       types.push_back(cmd->type);
     for (auto *cmd : visibility)
       cmd->type = WMTRenderCommandNop;
-    for (size_t k = 0; k <= draws.size(); k++) { // 0: no draw (the pass's clears alone); k: draw k - 1 alone
+    // 0: no draw (the pass's clears alone); k: draw k - 1 alone, or draws 0 to k - 1 in sequence.
+    for (size_t k = 0; k <= draws.size(); k++) {
       auto blit = cmdbuf.blitCommandEncoder();
       blit.waitForFence(fence_);
       for (auto &w : colors)
@@ -384,7 +396,7 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
       blit.updateFence(fence_);
       blit.endEncoding();
       for (size_t j = 0; j < draws.size(); j++)
-        draws[j]->type = j + 1 == k ? types[j] : (uint16_t)WMTRenderCommandNop;
+        draws[j]->type = (record.seq ? j + 1 <= k : j + 1 == k) ? types[j] : (uint16_t)WMTRenderCommandNop;
       auto encoder = cmdbuf.renderCommandEncoder(info);
       encoder.waitForFence(fence_, data->use_geometry ? WMTRenderStagePreRaster : WMTRenderStageVertex);
       encoder.encodeCommands(&data->cmd_head);
@@ -401,6 +413,8 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
       draws[j]->type = types[j];
     for (auto *cmd : visibility)
       cmd->type = WMTRenderCommandSetVisibilityMode;
+    d.pixel_notes += "# " + record.pass + ": " + std::to_string(draws.size()) + " draws redrawn" +
+                     (record.seq ? " in sequence\n" : " alone\n");
     d.pixel_passes.push_back(std::move(record));
   }
 
@@ -413,8 +427,9 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
     for (auto &dump : d.dumps)
       SaveCapture(dump.name.c_str(), dump.info.memory.get_accessible_or_null(), dump.info.length);
     if (d.pixel_on) {
-      // "pass-<n> draw-<k> <pipeline> c<i> <without draws>-><draw k alone> ...": the draws that change the pixel.
-      std::string text;
+      // "pass-<n> draw-<k> <pipeline> c<i> <before>-><after> ...": the draws that change the pixel. Before: the pass
+      // without draws (alone), or after the draw before (in sequence).
+      std::string text = d.pixel_notes;
       for (auto &p : d.pixel_passes) {
         auto *bytes = (const uint8_t *)p.info.memory.get_accessible_or_null();
         size_t stride = 16 * p.colors.size();
@@ -430,7 +445,7 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
         for (size_t k = 1; k <= p.draws.size(); k++) {
           std::string changes;
           for (size_t i = 0; i < p.colors.size(); i++) {
-            const uint8_t *without = bytes + i * 16, *with = bytes + k * stride + i * 16;
+            const uint8_t *without = bytes + (p.seq ? k - 1 : 0) * stride + i * 16, *with = bytes + k * stride + i * 16;
             if (memcmp(without, with, p.texels[i]))
               changes += " c" + std::to_string(p.colors[i]) + " " + hex(without, p.texels[i]) + "->" + hex(with, p.texels[i]);
           }
@@ -439,6 +454,9 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
         }
       }
       SaveCapture("pixels.txt", text.data(), text.size());
+      SaveCapture("draws.txt", d.pixel_draws.data(), d.pixel_draws.size());
+      d.pixel_notes.clear();
+      d.pixel_draws.clear();
       d.pixel_passes.clear();
       d.pixel_textures.clear();
     }
