@@ -1019,6 +1019,11 @@ AIRCONV_API int SM50Initialize(
       return 1;
     }
     if (*dxil_container) {
+      // The FNV-1a of the whole container: the name d3d12's capture mode saves it under (DXMT_PROBE finds it by it).
+      uint64_t hash = 0xcbf29ce484222325ull;
+      for (size_t i = 0; i < BytecodeSize; i++)
+        hash = (hash ^ ((const uint8_t *)pBytecode)[i]) * 0x100000001b3ull;
+      (**dxil_container).capture_hash = hash;
       auto sm50_shader = new dxmt::dxbc::SM50ShaderInternal();
       if (auto err = dxmt::dxil::InitializeDXIL(**dxil_container, sm50_shader, pRefl)) {
         delete sm50_shader;

@@ -117,6 +117,7 @@ struct DXILShader {
   std::map<uint32_t, uint32_t> unpacked_inputs;
   // Function arguments for the simdgroup lane index and size, when the shader uses wave operations; ~0u otherwise.
   uint32_t lane_index_arg = ~0u, lane_count_arg = ~0u;
+  uint64_t capture_hash = 0; // FNV-1a of the whole container, as capture mode names the shader (MacNeutron)
 };
 
 // Vertex shaders' unpacked SV_VertexID/SV_InstanceID read io_binding_map's vertex_id/instance_id instead of an argument.

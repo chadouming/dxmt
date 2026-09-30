@@ -176,6 +176,7 @@ InitializeDXIL(const Container &container, SM50ShaderInternal *shader, MTL_SHADE
   }
   auto dxil = std::make_shared<DXILShader>();
   dxil->bitcode.assign(container.bitcode, container.bitcode + container.bitcode_size);
+  dxil->capture_hash = container.capture_hash;
   dxil->entry = std::move(*entry);
   dxil->unpacked_inputs = std::move(unpacked_inputs);
   dxil->lane_index_arg = lane_index_arg;

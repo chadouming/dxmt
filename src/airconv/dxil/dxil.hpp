@@ -35,6 +35,7 @@ namespace dxmt::dxil {
 struct Container {
   const char *bitcode;
   size_t bitcode_size;
+  uint64_t capture_hash = 0; // FNV-1a of the whole container (MacNeutron)
 };
 
 // dxil_container.cpp: the DXIL part's bitcode; std::nullopt for a DXBC container; an error for a malformed DXIL part.
