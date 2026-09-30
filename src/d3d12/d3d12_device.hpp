@@ -133,6 +133,7 @@ public:
 class MTLD3D12PipelineState : public ID3D12PipelineState {
 public:
   UINT IsComputePipelineState;
+  uint64_t desc_hash = 0; // HashGraphicsDesc/HashComputeDesc of its description, for pipeline libraries
 
   static HRESULT
   InitializeShader(D3D12_SHADER_BYTECODE Bytecode, sm50_shader_t *ppShader, struct MTL_SHADER_REFLECTION *pRefl);
@@ -203,6 +204,15 @@ public:
 HRESULT CreateD3D12Device(IMTLDXGIAdapter *adapter, REFIID riid, void **ppDevice);
 
 HRESULT CreateClosedCommandList(MTLD3D12Device *pDevice, REFIID riid, void **ppCommandList);
+
+// Pipeline libraries (d3d12_pipeline_library.cpp): description hashes, stable within one DXMT build.
+uint64_t HashGraphicsDesc(const D3D12_GRAPHICS_PIPELINE_STATE_DESC &desc);
+uint64_t HashComputeDesc(const D3D12_COMPUTE_PIPELINE_STATE_DESC &desc);
+HRESULT ParsePipelineStream(
+    const D3D12_PIPELINE_STATE_STREAM_DESC *pDesc, D3D12_GRAPHICS_PIPELINE_STATE_DESC &desc_graphics,
+    D3D12_COMPUTE_PIPELINE_STATE_DESC &desc_cs, bool &compute
+);
+HRESULT CreatePipelineLibrary(MTLD3D12Device *pDevice, const void *blob, SIZE_T size, REFIID riid, void **ppLibrary);
 
 HRESULT
 CreateCommandQueue(MTLD3D12Device *pDevice, const D3D12_COMMAND_QUEUE_DESC *pDesc, REFIID riid, void **ppCommandQueue);

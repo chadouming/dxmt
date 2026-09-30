@@ -837,6 +837,7 @@ CreateGraphicsPipelineState(
   HRESULT hr = pso->Initialize(pDesc);
   if (FAILED(hr))
     return hr;
+  pso->desc_hash = HashGraphicsDesc(*pDesc);
   return pso->QueryInterface(riid, ppPipelineState);
 };
 

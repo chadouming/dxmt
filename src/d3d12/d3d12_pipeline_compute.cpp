@@ -141,6 +141,7 @@ CreateComputePipelineState(
   HRESULT hr = pso->Initialize(pDesc);
   if (FAILED(hr))
     return hr;
+  pso->desc_hash = HashComputeDesc(*pDesc);
   return pso->QueryInterface(riid, ppPipelineState);
 };
 
