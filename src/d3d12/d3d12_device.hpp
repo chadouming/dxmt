@@ -188,6 +188,12 @@ public:
 
   virtual HRESULT RegisterResidencyAndVA(BufferAllocation *allocation) = 0;
 
+  // Null SRVs point at these (MacNeutron): one zeroed 1x1 texture per Metal texture type a view can have (the sizes
+  // D3DMetal's null views report), and a zeroed texel buffer, for typed buffer SRVs and UAVs. Created once, on first
+  // use. Null UAV textures stay nil (Metal: reads zero, writes discarded).
+  virtual std::pair<Texture *, TextureViewKey> NullTexture(WMTTextureType type) = 0;
+  virtual std::pair<Buffer *, BufferViewKey> NullTexelBuffer() = 0;
+
   virtual HRESULT UnregisterResidencyAndVA(BufferAllocation *allocation) = 0;
 
   virtual BufferAllocation *LookupBufferByVA(D3D12_GPU_VIRTUAL_ADDRESS VA, uint64_t *pOffset) = 0;

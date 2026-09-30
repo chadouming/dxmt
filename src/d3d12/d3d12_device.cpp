@@ -265,6 +265,10 @@ class MTLD3D12DeviceImpl : public MTLD3D12Object<ComObject<MTLD3D12Device>> {
   bool advertise_numa_ = false;
 
   dxmt::mutex residency_lock_;
+  dxmt::mutex null_lock_;
+  std::map<WMTTextureType, Rc<Texture>> null_textures_;
+  Rc<Buffer> null_buffer_;
+  BufferViewKey null_buffer_view_;
   WMT::Reference<WMT::ResidencySet> residency_set_;
   std::map<uint64_t, BufferAllocation *> interval_map_;
 
@@ -1477,6 +1481,50 @@ public:
     residency_set_.removeAllocations(&allocation, 1);
     residency_set_.commit();
     return S_OK;
+  }
+
+  std::pair<Texture *, TextureViewKey>
+  NullTexture(WMTTextureType type) {
+    std::lock_guard<dxmt::mutex> lock(null_lock_);
+    auto &texture = null_textures_[type];
+    if (!texture) {
+      bool multisample = type == WMTTextureType2DMultisample || type == WMTTextureType2DMultisampleArray;
+      WMTTextureInfo info = {};
+      info.pixel_format = WMTPixelFormatRGBA32Float; // all four channels read 0
+      info.type = type;
+      info.width = info.height = info.depth = 1;
+      info.array_length = 1;
+      info.mipmap_level_count = 1;
+      info.sample_count = multisample ? 2 : 1; // the sizes D3DMetal's null views report
+      info.usage = WMTTextureUsage(WMTTextureUsageShaderRead | WMTTextureUsagePixelFormatView);
+      // Shared, so it can be zeroed here; multisample textures can't be, and rely on fresh memory being zero.
+      info.options = WMTResourceOptions(
+          (multisample ? WMTResourceStorageModePrivate : WMTResourceStorageModeShared) | WMTResourceHazardTrackingModeUntracked
+      );
+      texture = new Texture(info, GetMTLDevice());
+      texture->rename(texture->allocate({}));
+      RegisterResidency(texture->current()->texture());
+      if (!multisample) {
+        const float zero[4] = {};
+        unsigned slices = type == WMTTextureTypeCube || type == WMTTextureTypeCubeArray ? 6 : 1;
+        for (unsigned slice = 0; slice < slices; slice++)
+          texture->current()->texture().replaceRegion({0, 0, 0}, {1, 1, 1}, 0, slice, zero, sizeof(zero), sizeof(zero));
+      }
+    }
+    return {texture.ptr(), texture->fullView};
+  }
+
+  std::pair<Buffer *, BufferViewKey>
+  NullTexelBuffer() {
+    std::lock_guard<dxmt::mutex> lock(null_lock_);
+    if (!null_buffer_) {
+      null_buffer_ = new Buffer(16, GetMTLDevice());
+      null_buffer_->rename(null_buffer_->allocate({}));
+      memset(null_buffer_->current()->mappedMemory(0), 0, 16);
+      RegisterResidencyAndVA(null_buffer_->current());
+      null_buffer_view_ = null_buffer_->createView(BufferViewDescriptor{WMTPixelFormatRGBA32Float});
+    }
+    return {null_buffer_.ptr(), null_buffer_view_};
   }
 
   HRESULT

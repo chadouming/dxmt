@@ -67,6 +67,32 @@ struct ShaderVisibleDescriptorGPUStorage {
 
 static_assert(sizeof(ShaderVisibleDescriptorGPUStorage) == 32);
 
+// The Metal texture type an SRV of this dimension has, as d3d12_texture.cpp creates them (1D lowered to 2D);
+// WMTTextureTypeTextureBuffer for none.
+inline WMTTextureType
+NullViewType(D3D12_SRV_DIMENSION dimension) {
+  switch (dimension) {
+  case D3D12_SRV_DIMENSION_TEXTURE1D:
+  case D3D12_SRV_DIMENSION_TEXTURE2D:
+    return WMTTextureType2D;
+  case D3D12_SRV_DIMENSION_TEXTURE1DARRAY:
+  case D3D12_SRV_DIMENSION_TEXTURE2DARRAY:
+    return WMTTextureType2DArray;
+  case D3D12_SRV_DIMENSION_TEXTURE2DMS:
+    return WMTTextureType2DMultisample;
+  case D3D12_SRV_DIMENSION_TEXTURE2DMSARRAY:
+    return WMTTextureType2DMultisampleArray;
+  case D3D12_SRV_DIMENSION_TEXTURE3D:
+    return WMTTextureType3D;
+  case D3D12_SRV_DIMENSION_TEXTURECUBE:
+    return WMTTextureTypeCube;
+  case D3D12_SRV_DIMENSION_TEXTURECUBEARRAY:
+    return WMTTextureTypeCubeArray;
+  default:
+    return WMTTextureTypeTextureBuffer;
+  }
+}
+
 inline uint64_t
 TextureMetadata(uint32_t array_length, float min_lod) {
   return ((uint64_t)array_length << 32) | (uint64_t)std::bit_cast<uint32_t>(min_lod);
@@ -309,16 +335,23 @@ public:
       return E_INVALIDARG;
     if (!pDesc)
       return E_INVALIDARG;
-    /**
-     * TODO: support null descriptor properly (respect different view dimensions)
-     */
-    auto &cpu_storage = descriptors_[Index];
-    cpu_storage.type = ShaderVisibleDescriptorType::Null;
-    if (mapped_argument_buffer_) {
-      auto &gpu_storage = mapped_argument_buffer_[Index];
-      gpu_storage.ZeroFilled = {{}};
+    // A null descriptor reads zeros (MacNeutron): raw and structured buffers through a zero length, typed buffers
+    // through a zero element count, textures through the device's zeroed 1x1 texture of the view's type.
+    if (pDesc->ViewDimension == D3D12_SRV_DIMENSION_BUFFER) {
+      if (pDesc->Format == DXGI_FORMAT_UNKNOWN || (pDesc->Buffer.Flags & D3D12_BUFFER_SRV_FLAG_RAW))
+        return AddShaderResourceView(Index, (Buffer *)nullptr, BufferSlice{});
+      auto [buffer, view] = device_->NullTexelBuffer();
+      return AddShaderResourceView(Index, buffer, view, BufferSlice{});
     }
-    return S_OK;
+    auto type = NullViewType(pDesc->ViewDimension);
+    if (type == WMTTextureTypeTextureBuffer) { // no texture type: zero-filled, as before
+      descriptors_[Index].type = ShaderVisibleDescriptorType::Null;
+      if (mapped_argument_buffer_)
+        mapped_argument_buffer_[Index].ZeroFilled = {{}};
+      return S_OK;
+    }
+    auto [texture, view] = device_->NullTexture(type);
+    return AddShaderResourceView(Index, texture, view, 0.0f);
   }
 
   virtual HRESULT
@@ -327,15 +360,17 @@ public:
       return E_INVALIDARG;
     if (!pDesc)
       return E_INVALIDARG;
-    /**
-     * TODO: support null descriptor properly (respect different view dimensions)
-     */
-    auto &cpu_storage = descriptors_[Index];
-    cpu_storage.type = ShaderVisibleDescriptorType::Null;
-    if (mapped_argument_buffer_) {
-      auto &gpu_storage = mapped_argument_buffer_[Index];
-      gpu_storage.ZeroFilled = {{}};
+    // Buffers as null SRVs. Textures stay nil: Metal defines a null texture as reading zero with writes discarded,
+    // which is D3D12's null UAV (and D3DMetal's).
+    if (pDesc->ViewDimension == D3D12_UAV_DIMENSION_BUFFER) {
+      if (pDesc->Format == DXGI_FORMAT_UNKNOWN || (pDesc->Buffer.Flags & D3D12_BUFFER_UAV_FLAG_RAW))
+        return AddUnorderedAccessView(Index, (Buffer *)nullptr, BufferSlice{}, nullptr, 0);
+      auto [buffer, view] = device_->NullTexelBuffer();
+      return AddUnorderedAccessView(Index, buffer, view, BufferSlice{});
     }
+    descriptors_[Index].type = ShaderVisibleDescriptorType::Null;
+    if (mapped_argument_buffer_)
+      mapped_argument_buffer_[Index].ZeroFilled = {{}};
     return S_OK;
   }
 
