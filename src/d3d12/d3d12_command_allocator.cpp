@@ -316,6 +316,14 @@ MTLD3D12CommandAllocatorImpl::EncodeIndirectRenderCommand(
     auto &cmd_setpso = EncodeRenderCommand<wmtcmd_render_setpso>();
     cmd_setpso.type = WMTRenderCommandSetPSO;
     cmd_setpso.pso = pPSO->pso;
+
+    // MacNeutron: the resolver's vertex function writes the ICB; without a barrier the ICB can run before it has
+    // (draws lost or half written: Unreal's grass and particles flickered).
+    auto &cmd_barrier = EncodeRenderCommand<wmtcmd_render_memory_barrier>();
+    cmd_barrier.type = WMTRenderCommandMemoryBarrier;
+    cmd_barrier.scope = WMTBarrierScopeBuffers;
+    cmd_barrier.stages_after = WMTRenderStageVertex;
+    cmd_barrier.stages_before = WMTRenderStageVertex | WMTRenderStageFragment;
   }
 
   auto &cmd = EncodeRenderCommand<wmtcmd_render_executecommands>();
