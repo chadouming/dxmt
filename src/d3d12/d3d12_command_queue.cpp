@@ -69,7 +69,7 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
     std::atomic_uint64_t frames = 0;
     std::atomic_uint64_t frame = ~0ull;
     bool on_key = false;
-    uint32_t saved = 0; // F9 dumps saved so far: the next goes to f9-<saved + 1>
+    uint32_t saved = 0; // the last f9-<n> folder used; the next F9 takes the first free one after it
     uint32_t passes = 0, queues = 0;
     uint64_t bytes = 0;
     std::vector<PassDump> dumps;
@@ -451,11 +451,12 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
     std::lock_guard<std::mutex> lock(d.mutex);
     if (d.log.empty())
       return;
-    // F9 mode: each dump in its own folder, f9-1, f9-2, ..., so a few presses in a row keep every frame.
+    // F9 mode: each dump in its own new folder, f9-1, f9-2, ..., after any a previous run left.
     std::string dir;
     if (d.on_key) {
-      dir = "f9-" + std::to_string(++d.saved);
-      MakeCaptureFolder(dir.c_str());
+      do
+        dir = "f9-" + std::to_string(++d.saved);
+      while (!MakeCaptureFolder(dir.c_str()));
       dir += "\\";
     }
     for (auto &dump : d.dumps)

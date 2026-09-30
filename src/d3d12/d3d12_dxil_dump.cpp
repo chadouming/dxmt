@@ -110,10 +110,10 @@ void DumpRootSignature(const void *blob, size_t size) {
   SaveOnce(name, blob, size);
 }
 
-void MakeCaptureFolder(const char *name) {
+bool MakeCaptureFolder(const char *name) {
   const std::wstring &folder = CaptureFolder();
-  if (!folder.empty())
-    CreateDirectoryW((folder + L"\\" + str::tows(name)).c_str(), nullptr);
+  return folder.empty() || CreateDirectoryW((folder + L"\\" + str::tows(name)).c_str(), nullptr) ||
+         GetLastError() != ERROR_ALREADY_EXISTS;
 }
 
 void SaveCapture(const char *name, const void *data, size_t size) {

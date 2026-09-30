@@ -25,7 +25,7 @@ void LogPipeline(const std::string &line);
 // Capture mode: saves `data` as <folder>/<name>, replacing any earlier file of that name.
 void SaveCapture(const char *name, const void *data, size_t size);
 // Creates <capture folder>\<name> (MacNeutron: per-F9 dump folders).
-void MakeCaptureFolder(const char *name);
+bool MakeCaptureFolder(const char *name); // false: the folder was already there
 
 // Pixel history (MacNeutron capture mode): a render pipeline's description ("gfx vs=... ps=... blend0=..."), by its
 // Metal pipeline state handle, for naming the draws that change a pixel.
