@@ -69,6 +69,7 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
     std::atomic_uint64_t frames = 0;
     std::atomic_uint64_t frame = ~0ull;
     bool on_key = false;
+    uint32_t saved = 0; // F9 dumps saved so far: the next goes to f9-<saved + 1>
     uint32_t passes = 0, queues = 0;
     uint64_t bytes = 0;
     std::vector<PassDump> dumps;
@@ -450,8 +451,15 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
     std::lock_guard<std::mutex> lock(d.mutex);
     if (d.log.empty())
       return;
+    // F9 mode: each dump in its own folder, f9-1, f9-2, ..., so a few presses in a row keep every frame.
+    std::string dir;
+    if (d.on_key) {
+      dir = "f9-" + std::to_string(++d.saved);
+      MakeCaptureFolder(dir.c_str());
+      dir += "\\";
+    }
     for (auto &dump : d.dumps)
-      SaveCapture(dump.name.c_str(), dump.info.memory.get_accessible_or_null(), dump.info.length);
+      SaveCapture((dir + dump.name).c_str(), dump.info.memory.get_accessible_or_null(), dump.info.length);
     if (d.pixel_on) {
       // "pass-<n> draw-<k> <pipeline> c<i> <before>-><after> ...": the draws that change the pixel. Before: the pass
       // without draws (alone), or after the draw before (in sequence).
@@ -482,14 +490,14 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
                       std::to_string(p.points[q].first) + "," + std::to_string(p.points[q].second) + "\n";
           }
       }
-      SaveCapture("pixels.txt", text.data(), text.size());
-      SaveCapture("draws.txt", d.pixel_draws.data(), d.pixel_draws.size());
+      SaveCapture((dir + "pixels.txt").c_str(), text.data(), text.size());
+      SaveCapture((dir + "draws.txt").c_str(), d.pixel_draws.data(), d.pixel_draws.size());
       d.pixel_notes.clear();
       d.pixel_draws.clear();
       d.pixel_passes.clear();
       d.pixel_textures.clear();
     }
-    SaveCapture("passes.txt", d.log.data(), d.log.size());
+    SaveCapture((dir + "passes.txt").c_str(), d.log.data(), d.log.size());
     d.dumps.clear();
     d.log.clear();
     d.passes = 0;
