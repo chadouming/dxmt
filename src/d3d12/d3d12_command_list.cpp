@@ -738,6 +738,72 @@ public:
     return true;
   }
 
+  // A copy between formats D3D12 lets reinterpret (same bits per texel or block; MacNeutron). Same size, neither
+  // compressed nor depth: one blit from a view of the source in the destination's pixel format (every texture allows
+  // format views). Compressed and not, or a depth format: through the allocator's temp buffer, no allocation.
+  // `src_size` is in texels of the source.
+  void
+  CopyReinterpret(
+      Texture *src, const MTL_DXGI_FORMAT_DESC &src_format, uint32_t src_level, uint32_t src_slice, WMTOrigin src_origin,
+      WMTSize src_size, Texture *dst, const MTL_DXGI_FORMAT_DESC &dst_format, uint32_t dst_level, uint32_t dst_slice,
+      WMTOrigin dst_origin
+  ) {
+    bool src_bc = src_format.Flag & MTL_DXGI_FORMAT_BC, dst_bc = dst_format.Flag & MTL_DXGI_FORMAT_BC;
+    if (src_format.BytesPerTexel != dst_format.BytesPerTexel) {
+      WARN("CopyReinterpret: formats ", src_format.PixelFormat, " and ", dst_format.PixelFormat, " differ in size, skipped");
+      return;
+    }
+    auto src_depth = DepthStencilPlanarFlags(src->pixelFormat()), dst_depth = DepthStencilPlanarFlags(dst->pixelFormat());
+    if (!src_bc && !dst_bc && !src_depth && !dst_depth) {
+      TextureViewDescriptor view{.format = dst_format.PixelFormat, .type = src->textureType()};
+      view.miplevelCount = src->miplevelCount();
+      view.arraySize = src->arrayLength();
+      auto key = src->createView(view);
+      auto &cmd = allocator_->EncodeBlitCommand<wmtcmd_blit_copy_from_texture_to_texture>();
+      cmd.type = WMTBlitCommandCopyFromTextureToTexture;
+      cmd.src = src->view(key).texture;
+      cmd.src_level = src_level;
+      cmd.src_slice = src_slice;
+      cmd.src_origin = src_origin;
+      cmd.src_size = src_size;
+      cmd.dst = dst->current()->texture();
+      cmd.dst_level = dst_level;
+      cmd.dst_slice = dst_slice;
+      cmd.dst_origin = dst_origin;
+      return;
+    }
+    // A block of a compressed format is one texel of the other: count units (texels or blocks) of the source.
+    uint32_t src_scale = src_bc ? 4 : 1, dst_scale = dst_bc ? 4 : 1;
+    uint32_t units_w = std::max<uint32_t>(src_size.width / src_scale, 1), units_h = std::max<uint32_t>(src_size.height / src_scale, 1);
+    uint32_t bytes_per_row = align(units_w * src_format.BytesPerTexel, 256);
+    uint32_t bytes_per_image = bytes_per_row * units_h;
+    auto [temp, temp_offset] = allocator_->AllocateTempBuffer(bytes_per_image * src_size.depth, 256);
+    auto &to_buffer = allocator_->EncodeBlitCommand<wmtcmd_blit_copy_from_texture_to_buffer_withblitoption>();
+    to_buffer.type = WMTBlitCommandCopyFromTextureToBufferWithBlitOption;
+    to_buffer.src = src->current()->texture();
+    to_buffer.level = src_level;
+    to_buffer.slice = src_slice;
+    to_buffer.origin = src_origin;
+    to_buffer.size = src_size;
+    to_buffer.dst = temp;
+    to_buffer.offset = temp_offset;
+    to_buffer.bytes_per_row = bytes_per_row;
+    to_buffer.bytes_per_image = bytes_per_image;
+    to_buffer.options = src_depth == 3 ? WMTBlitOptionDepthFromDepthStencil : WMTBlitOptionNone;
+    auto &to_texture = allocator_->EncodeBlitCommand<wmtcmd_blit_copy_from_buffer_to_texture_withblitoption>();
+    to_texture.type = WMTBlitCommandCopyFromBufferToTextureWithBlitOption;
+    to_texture.src = temp;
+    to_texture.src_offset = temp_offset;
+    to_texture.bytes_per_row = bytes_per_row;
+    to_texture.bytes_per_image = bytes_per_image;
+    to_texture.size = {units_w * dst_scale, units_h * dst_scale, src_size.depth};
+    to_texture.dst = dst->current()->texture();
+    to_texture.level = dst_level;
+    to_texture.slice = dst_slice;
+    to_texture.origin = dst_origin;
+    to_texture.options = dst_depth == 3 ? WMTBlitOptionDepthFromDepthStencil : WMTBlitOptionNone;
+  }
+
   void STDMETHODCALLTYPE
   CopyBufferRegion(
       ID3D12Resource *pDstBuffer, UINT64 DstOffset, ID3D12Resource *pSrcBuffer, UINT64 SrcOffset, UINT64 ByteCount
@@ -845,6 +911,13 @@ public:
           return;
         }
         auto src_planar_count = src_format.PlanarCount;
+
+        if (src->pixelFormat() != dst->pixelFormat()) { // formats D3D12 lets reinterpret (MacNeutron)
+          CopyReinterpret(src.ptr(), src_format, src_level, src_slice, {src_box.left, src_box.top, src_box.front},
+                          {src_box.right - src_box.left, src_box.bottom - src_box.top, src_box.back - src_box.front},
+                          dst.ptr(), dst_format, dst_level, dst_slice, {DstX, DstY, DstZ});
+          return;
+        }
 
         // copy between depth-stencil texture is tricky
         if (dst_planar_count > 1 || src_planar_count > 1) {
@@ -983,9 +1056,20 @@ public:
       return;
     }
 
-    // TODO: handle reinterpret copy
     if (pDst->texture->pixelFormat() != pSrc->texture->pixelFormat()) {
-      WARN("CopyResource: TODO: reinterpret copy");
+      MTL_DXGI_FORMAT_DESC src_format, dst_format;
+      if (FAILED(MTLQueryDXGIFormat(device_->GetMTLDevice(), SrcDesc.Format, src_format)) ||
+          FAILED(MTLQueryDXGIFormat(device_->GetMTLDevice(), DstDesc.Format, dst_format)))
+        return;
+      bool volume = SrcDesc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D;
+      uint32_t levels = SrcDesc.MipLevels, slices = volume ? 1 : SrcDesc.DepthOrArraySize;
+      for (uint32_t slice = 0; slice < slices; slice++)
+        for (uint32_t level = 0; level < levels; level++) {
+          uint32_t w = std::max<uint32_t>(SrcDesc.Width >> level, 1), h = std::max<uint32_t>(SrcDesc.Height >> level, 1);
+          uint32_t d = volume ? std::max<uint32_t>(SrcDesc.DepthOrArraySize >> level, 1) : 1;
+          CopyReinterpret(pSrc->texture.ptr(), src_format, level, slice, {0, 0, 0}, {w, h, d}, pDst->texture.ptr(),
+                          dst_format, level, slice, {0, 0, 0});
+        }
       return;
     }
 
