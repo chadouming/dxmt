@@ -17,6 +17,7 @@
  */
 
 #include "d3d12_device.hpp"
+#include "d3d12_feature_data.hpp"
 #include "d3d12_dxil_dump.hpp"
 #include "d3d12_device_child.hpp"
 #include "Metal.hpp"
@@ -337,14 +338,12 @@ public:
       return S_OK;
     }
     case D3D12_FEATURE_D3D12_OPTIONS9: {
-      if (!DXILCaptureMode())
-        break;
       if (DataSize != sizeof(D3D12_FEATURE_DATA_D3D12_OPTIONS9))
         return E_INVALIDARG;
       auto *out = reinterpret_cast<D3D12_FEATURE_DATA_D3D12_OPTIONS9 *>(pFeatureData);
       *out = {};
-      out->AtomicInt64OnTypedResourceSupported = TRUE;
-      out->AtomicInt64OnGroupSharedSupported = TRUE;
+      out->AtomicInt64OnTypedResourceSupported = DXILCaptureMode();
+      out->AtomicInt64OnGroupSharedSupported = DXILCaptureMode();
       return S_OK;
     }
     case D3D12_FEATURE_D3D12_OPTIONS12: {
@@ -398,6 +397,83 @@ public:
       out->Support2 = (D3D12_FORMAT_SUPPORT2)0xffffffff;
       return S_OK;
     }
+#define FEATURE_DATA(T)                                                                                                \
+  if (DataSize != sizeof(T))                                                                                           \
+    return E_INVALIDARG;                                                                                               \
+  auto *out = reinterpret_cast<T *>(pFeatureData);                                                                     \
+  *out = {};
+    // Newer queries D3DMetal answers (MacNeutron): DXMT's own capabilities, none of what the fork lacks.
+    case D3D12_FEATURE_PROTECTED_RESOURCE_SESSION_SUPPORT: {
+      if (DataSize != sizeof(D3D12_FEATURE_DATA_PROTECTED_RESOURCE_SESSION_SUPPORT))
+        return E_INVALIDARG;
+      auto *out = reinterpret_cast<D3D12_FEATURE_DATA_PROTECTED_RESOURCE_SESSION_SUPPORT *>(pFeatureData);
+      if (out->NodeIndex)
+        return E_INVALIDARG;
+      out->Support = D3D12_PROTECTED_RESOURCE_SESSION_SUPPORT_FLAG_NONE;
+      return S_OK;
+    }
+    case D3D12_FEATURE_EXISTING_HEAPS: { // OpenExistingHeapFrom* are E_NOTIMPL
+      FEATURE_DATA(D3D12_FEATURE_DATA_EXISTING_HEAPS)
+      return S_OK;
+    }
+    case D3D12_FEATURE_CROSS_NODE:
+    case D3D12_FEATURE_DISPLAYABLE:
+      return E_INVALIDARG; // as D3DMetal
+    case D3D12_FEATURE_D3D12_OPTIONS5: { // no raytracing, render passes tier 0
+      FEATURE_DATA(D3D12_FEATURE_DATA_D3D12_OPTIONS5)
+      out->RenderPassesTier = D3D12_RENDER_PASS_TIER_0;
+      out->RaytracingTier = D3D12_RAYTRACING_TIER_NOT_SUPPORTED;
+      return S_OK;
+    }
+    case D3D12_FEATURE_D3D12_OPTIONS6: { // no variable-rate shading
+      FEATURE_DATA(D3D12_FEATURE_DATA_D3D12_OPTIONS6)
+      return S_OK;
+    }
+    case D3D12_FEATURE_D3D12_OPTIONS8: {
+      FEATURE_DATA(D3D12_FEATURE_DATA_D3D12_OPTIONS8)
+      return S_OK;
+    }
+    case D3D12_FEATURE_D3D12_OPTIONS10: {
+      FEATURE_DATA(D3D12_FEATURE_DATA_D3D12_OPTIONS10)
+      return S_OK;
+    }
+    case D3D12_FEATURE_D3D12_OPTIONS11: {
+      FEATURE_DATA(D3D12_FEATURE_DATA_D3D12_OPTIONS11)
+      return S_OK;
+    }
+    case D3D12_FEATURE_D3D12_OPTIONS13: {
+      FEATURE_DATA(D3D12_FEATURE_DATA_D3D12_OPTIONS13)
+      return S_OK;
+    }
+    case D3D12_FEATURE_D3D12_OPTIONS14: {
+      FEATURE_DATA(D3D12_FEATURE_DATA_D3D12_OPTIONS14)
+      return S_OK;
+    }
+    case D3D12_FEATURE_D3D12_OPTIONS15: {
+      FEATURE_DATA(D3D12_FEATURE_DATA_D3D12_OPTIONS15)
+      return S_OK;
+    }
+    case D3D12_FEATURE_D3D12_OPTIONS17: {
+      FEATURE_DATA(D3D12_FEATURE_DATA_D3D12_OPTIONS17)
+      return S_OK;
+    }
+    case D3D12_FEATURE_D3D12_OPTIONS18: {
+      FEATURE_DATA(D3D12_FEATURE_DATA_D3D12_OPTIONS18)
+      return S_OK;
+    }
+    case kFeatureOptions19: {
+      FEATURE_DATA(D3D12_FEATURE_DATA_D3D12_OPTIONS19_MN)
+      out->MaxSamplerDescriptorHeapSize = 2048;
+      out->MaxSamplerDescriptorHeapSizeWithStaticSamplers = 2048;
+      out->MaxViewDescriptorHeapSize = 1000000;
+      return S_OK;
+    }
+    case kFeatureOptions21: {
+      FEATURE_DATA(D3D12_FEATURE_DATA_D3D12_OPTIONS21_MN)
+      out->ExecuteIndirectTier = 10; // D3D12_EXECUTE_INDIRECT_TIER_1_0
+      return S_OK;
+    }
+#undef FEATURE_DATA
     default:
       break;
     }
