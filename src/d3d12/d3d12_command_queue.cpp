@@ -26,6 +26,8 @@
 #include "dxmt_capture.hpp"
 #include "dxmt_format.hpp"
 #include "d3d12_dxil_dump.hpp"
+#include <cstdio>
+#include <cstring>
 #include <ctime>
 #include <mutex>
 #include <atomic>
@@ -71,6 +73,21 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
     uint64_t bytes = 0;
     std::vector<PassDump> dumps;
     std::string log;
+    // Pixel history (DXMT_DUMP_PIXEL=<x>,<y>[,<first pass>,<last pass>]): each draw of the dumped frame's render passes
+    // redrawn alone into scratch attachments, from the pass's starting state; pixels.txt lists the draws that change
+    // the pixel, with their pipeline. Alone: a draw an earlier draw of the pass would hide is listed too. The redraws
+    // are full size: narrow the passes for a big frame.
+    bool pixel_on = false;
+    uint32_t pixel_x = 0, pixel_y = 0, pixel_first = 0, pixel_last = ~0u;
+    struct PixelPass {
+      std::string pass;
+      std::vector<std::string> draws;       // each draw's pipeline
+      std::vector<uint32_t> colors, texels; // the color attachments watched, and their texel sizes
+      WMT::Reference<WMT::Buffer> buffer;   // 16 bytes per color: the pass without draws, then each draw alone
+      WMTBufferInfo info;
+    };
+    std::vector<PixelPass> pixel_passes;
+    std::vector<WMT::Reference<WMT::Texture>> pixel_textures; // scratch, kept until the dumped frame completes
 
     PassDumps() {
       auto value = env::getEnvVar("DXMT_DUMP_FRAME");
@@ -80,6 +97,17 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
       try {
         frame = std::stoull(value);
       } catch (const std::invalid_argument &) {
+      }
+      unsigned x, y, first, last;
+      int fields = sscanf(env::getEnvVar("DXMT_DUMP_PIXEL").c_str(), "%u,%u,%u,%u", &x, &y, &first, &last);
+      if (fields == 2 || fields == 4) {
+        pixel_on = true;
+        pixel_x = x;
+        pixel_y = y;
+        if (fields == 4) {
+          pixel_first = first;
+          pixel_last = last;
+        }
       }
     }
   };
@@ -158,6 +186,224 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
     d.log += "\n";
   }
 
+  // Pixel history for one render pass of the dumped frame (PassDumps). Encoded before the pass, into scratch textures
+  // only, so the frame itself renders as it would have.
+  void
+  PixelHistory(WMT::CommandBuffer &cmdbuf, RenderEncoderData *data, const WMTRenderPassInfo &real) {
+    auto &d = Dumps();
+    std::lock_guard<std::mutex> lock(d.mutex);
+    uint32_t pass = d.passes; // DumpPass numbers this pass once it is encoded
+    if (!d.pixel_on || pass < d.pixel_first || pass > d.pixel_last || data->render_target_array_length > 1)
+      return;
+    const uint32_t x = d.pixel_x, y = d.pixel_y;
+    // The draws, each under the pipeline set before it; and the visibility commands, which mustn't count into a
+    // query heap on a redraw.
+    std::vector<wmtcmd_base *> draws, visibility;
+    std::vector<std::string> names;
+    std::string pipeline = "(no pipeline)";
+    for (auto *cmd = (wmtcmd_base *)&data->cmd_head; cmd; cmd = (wmtcmd_base *)cmd->next.get()) {
+      switch (cmd->type) {
+      case WMTRenderCommandSetPSO:
+        pipeline = PipelineName(((wmtcmd_render_setpso *)cmd)->pso);
+        break;
+      case WMTRenderCommandSetVisibilityMode:
+        visibility.push_back(cmd);
+        break;
+      case WMTRenderCommandDraw:
+      case WMTRenderCommandDrawIndexed:
+      case WMTRenderCommandDrawIndirect:
+      case WMTRenderCommandDrawIndexedIndirect:
+      case WMTRenderCommandDrawMeshThreadgroups:
+      case WMTRenderCommandDrawMeshThreadgroupsIndirect:
+      case WMTRenderCommandDXMTGeometryDraw:
+      case WMTRenderCommandDXMTGeometryDrawIndexed:
+      case WMTRenderCommandDXMTGeometryDrawIndirect:
+      case WMTRenderCommandDXMTGeometryDrawIndexedIndirect:
+      case WMTRenderCommandDXMTTessellationMeshDraw:
+      case WMTRenderCommandDXMTTessellationMeshDrawIndexed:
+      case WMTRenderCommandDXMTTessellationMeshDrawIndirect:
+      case WMTRenderCommandDXMTTessellationMeshDrawIndexedIndirect:
+      case WMTRenderCommandDispatchThreadsPerTile:
+      case WMTRenderCommandExecuteCommandsInBuffer:
+        draws.push_back(cmd);
+        names.push_back(pipeline);
+        break;
+      default:
+        break;
+      }
+    }
+    if (draws.empty())
+      return;
+
+    auto metal = device_->GetMTLDevice();
+    auto scratch = [&](WMTPixelFormat format, uint64_t width, uint64_t height) {
+      WMTTextureInfo t = {};
+      t.pixel_format = format;
+      t.type = WMTTextureType2D;
+      t.width = width;
+      t.height = height;
+      t.depth = 1;
+      t.array_length = 1;
+      t.mipmap_level_count = 1;
+      t.sample_count = 1;
+      t.usage = WMTTextureUsage(WMTTextureUsageRenderTarget | WMTTextureUsageShaderRead);
+      t.options = WMTResourceOptions(WMTResourceStorageModePrivate);
+      auto texture = metal.newTexture(t);
+      d.pixel_textures.push_back(texture);
+      return texture;
+    };
+    // The redraw's pass: scratch attachments, loaded (a DontCare load reads the pixel as it was) and stored.
+    WMTRenderPassInfo info = real;
+    info.visibility_buffer = 0;
+    info.visibility_accumulate = false;
+    for (auto &sample : info.sample_buffers)
+      sample = {};
+    struct Watched {
+      WMT::Texture texture;
+      uint32_t slice, level, plane;
+      WMT::Reference<WMT::Texture> scratch, before;
+    };
+    std::vector<Watched> colors;
+    PassDumps::PixelPass record;
+    record.pass = "pass-" + std::to_string(pass);
+    record.draws = names;
+    for (unsigned i = 0; i < std::size(info.colors); i++) {
+      auto &c = data->colors[i];
+      if (!c.attachment)
+        continue;
+      if (c.attachment->allocation && c.attachment->allocation->descriptor &&
+          c.attachment->allocation->descriptor->sampleCount() > 1)
+        return; // ponytail: no pixel history in multisampled passes
+      auto texture = c.attachment.texture();
+      uint64_t width = std::max<uint64_t>(1, texture.width() >> c.level);
+      uint64_t height = std::max<uint64_t>(1, texture.height() >> c.level);
+      if (x >= width || y >= height)
+        return; // the pixel lies outside this pass
+      auto format = texture.pixelFormat();
+      colors.push_back({texture, c.slice, c.level, c.depth_plane, scratch(format, width, height), scratch(format, 1, 1)});
+      auto &color = info.colors[i];
+      color.texture = colors.back().scratch.handle;
+      color.level = color.slice = color.depth_plane = 0;
+      color.resolve_texture = 0;
+      color.store_action = WMTStoreActionStore;
+      if (color.load_action == WMTLoadActionDontCare)
+        color.load_action = WMTLoadActionLoad;
+      record.colors.push_back(i);
+      record.texels.push_back(MTLGetTexelSize(format));
+    }
+    if (colors.empty())
+      return; // ponytail: colors only; a depth-only pass shows no history
+    // Depth and stencil (one texture in D3D12) are copied whole: Metal copies depth-stencil textures whole.
+    WMT::Texture depth_texture = {};
+    WMT::Reference<WMT::Texture> depth_scratch, depth_before;
+    uint32_t depth_slice = 0, depth_level = 0;
+    uint64_t depth_width = 0, depth_height = 0;
+    if (data->stencil.attachment &&
+        (!data->depth.attachment || data->stencil.attachment.texture().handle != data->depth.attachment.texture().handle))
+      return; // ponytail: a separate stencil texture isn't redrawn
+    if (data->depth.attachment) {
+      depth_texture = data->depth.attachment.texture();
+      depth_slice = data->depth.slice;
+      depth_level = data->depth.level;
+      depth_width = std::max<uint64_t>(1, depth_texture.width() >> depth_level);
+      depth_height = std::max<uint64_t>(1, depth_texture.height() >> depth_level);
+      depth_scratch = scratch(depth_texture.pixelFormat(), depth_width, depth_height);
+      depth_before = scratch(depth_texture.pixelFormat(), depth_width, depth_height);
+      auto redirect = [&](auto &plane) {
+        if (!plane.texture)
+          return;
+        plane.texture = depth_scratch.handle;
+        plane.level = plane.slice = plane.depth_plane = 0;
+        plane.store_action = WMTStoreActionStore;
+        if (plane.load_action == WMTLoadActionDontCare)
+          plane.load_action = WMTLoadActionLoad;
+      };
+      redirect(info.depth);
+      redirect(info.stencil);
+    }
+    const uint64_t slot = 16, stride = slot * colors.size();
+    record.info.length = stride * (draws.size() + 1);
+    record.info.options = WMTResourceStorageModeShared;
+    record.info.memory.set(0);
+    record.buffer = metal.newBuffer(record.info);
+    if (!record.buffer || !record.info.memory.get_accessible_or_null())
+      return;
+
+    auto copy = [&](WMT::BlitCommandEncoder &blit, obj_handle_t src, uint32_t slice, uint32_t level, WMTOrigin from,
+                    WMTSize size, obj_handle_t dst, WMTOrigin to) {
+      wmtcmd_blit_copy_from_texture_to_texture cmd = {};
+      cmd.type = WMTBlitCommandCopyFromTextureToTexture;
+      cmd.next.set(nullptr);
+      cmd.src = src;
+      cmd.src_slice = slice;
+      cmd.src_level = level;
+      cmd.src_origin = from;
+      cmd.src_size = size;
+      cmd.dst = dst;
+      cmd.dst_origin = to;
+      blit.encodeCommands((const wmtcmd_blit_nop *)&cmd);
+    };
+    auto read = [&](WMT::BlitCommandEncoder &blit, obj_handle_t src, uint32_t texel, uint64_t offset) {
+      wmtcmd_blit_copy_from_texture_to_buffer_withblitoption cmd = {};
+      cmd.type = WMTBlitCommandCopyFromTextureToBufferWithBlitOption;
+      cmd.next.set(nullptr);
+      cmd.src = src;
+      cmd.origin = {x, y, 0};
+      cmd.size = {1, 1, 1};
+      cmd.dst = record.buffer.handle;
+      cmd.offset = offset;
+      cmd.bytes_per_row = texel;
+      cmd.bytes_per_image = texel;
+      cmd.options = WMTBlitOptionNone;
+      blit.encodeCommands((const wmtcmd_blit_nop *)&cmd);
+    };
+    // The pixel (and the whole depth) as they are before the pass.
+    {
+      auto blit = cmdbuf.blitCommandEncoder();
+      blit.waitForFence(fence_);
+      for (auto &w : colors)
+        copy(blit, w.texture.handle, w.slice, w.level, {x, y, w.plane}, {1, 1, 1}, w.before.handle, {0, 0, 0});
+      if (depth_before)
+        copy(blit, depth_texture.handle, depth_slice, depth_level, {0, 0, 0}, {depth_width, depth_height, 1},
+             depth_before.handle, {0, 0, 0});
+      blit.updateFence(fence_);
+      blit.endEncoding();
+    }
+    std::vector<uint16_t> types;
+    for (auto *cmd : draws)
+      types.push_back(cmd->type);
+    for (auto *cmd : visibility)
+      cmd->type = WMTRenderCommandNop;
+    for (size_t k = 0; k <= draws.size(); k++) { // 0: no draw (the pass's clears alone); k: draw k - 1 alone
+      auto blit = cmdbuf.blitCommandEncoder();
+      blit.waitForFence(fence_);
+      for (auto &w : colors)
+        copy(blit, w.before.handle, 0, 0, {0, 0, 0}, {1, 1, 1}, w.scratch.handle, {x, y, 0});
+      if (depth_before)
+        copy(blit, depth_before.handle, 0, 0, {0, 0, 0}, {depth_width, depth_height, 1}, depth_scratch.handle, {0, 0, 0});
+      blit.updateFence(fence_);
+      blit.endEncoding();
+      for (size_t j = 0; j < draws.size(); j++)
+        draws[j]->type = j + 1 == k ? types[j] : (uint16_t)WMTRenderCommandNop;
+      auto encoder = cmdbuf.renderCommandEncoder(info);
+      encoder.waitForFence(fence_, data->use_geometry ? WMTRenderStagePreRaster : WMTRenderStageVertex);
+      encoder.encodeCommands(&data->cmd_head);
+      encoder.updateFence(fence_, WMTRenderStageFragment);
+      encoder.endEncoding();
+      auto readback = cmdbuf.blitCommandEncoder();
+      readback.waitForFence(fence_);
+      for (size_t i = 0; i < colors.size(); i++)
+        read(readback, colors[i].scratch.handle, record.texels[i], k * stride + i * slot);
+      readback.updateFence(fence_);
+      readback.endEncoding();
+    }
+    for (size_t j = 0; j < draws.size(); j++)
+      draws[j]->type = types[j];
+    for (auto *cmd : visibility)
+      cmd->type = WMTRenderCommandSetVisibilityMode;
+    d.pixel_passes.push_back(std::move(record));
+  }
+
   static void
   SaveDumps() {
     auto &d = Dumps();
@@ -166,6 +412,36 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
       return;
     for (auto &dump : d.dumps)
       SaveCapture(dump.name.c_str(), dump.info.memory.get_accessible_or_null(), dump.info.length);
+    if (d.pixel_on) {
+      // "pass-<n> draw-<k> <pipeline> c<i> <without draws>-><draw k alone> ...": the draws that change the pixel.
+      std::string text;
+      for (auto &p : d.pixel_passes) {
+        auto *bytes = (const uint8_t *)p.info.memory.get_accessible_or_null();
+        size_t stride = 16 * p.colors.size();
+        auto hex = [](const uint8_t *b, uint32_t n) {
+          std::string s;
+          char digits[3];
+          for (uint32_t t = 0; t < n; t++) {
+            snprintf(digits, sizeof(digits), "%02x", b[t]);
+            s += digits;
+          }
+          return s;
+        };
+        for (size_t k = 1; k <= p.draws.size(); k++) {
+          std::string changes;
+          for (size_t i = 0; i < p.colors.size(); i++) {
+            const uint8_t *without = bytes + i * 16, *with = bytes + k * stride + i * 16;
+            if (memcmp(without, with, p.texels[i]))
+              changes += " c" + std::to_string(p.colors[i]) + " " + hex(without, p.texels[i]) + "->" + hex(with, p.texels[i]);
+          }
+          if (!changes.empty())
+            text += p.pass + " draw-" + std::to_string(k - 1) + " " + p.draws[k - 1] + changes + "\n";
+        }
+      }
+      SaveCapture("pixels.txt", text.data(), text.size());
+      d.pixel_passes.clear();
+      d.pixel_textures.clear();
+    }
     SaveCapture("passes.txt", d.log.data(), d.log.size());
     d.dumps.clear();
     d.log.clear();
@@ -466,6 +742,8 @@ public:
             for (unsigned i = 0; i < data->num_samples; i++)
               render_pass_info.sample_buffers[i] = {data->samples[i].buffer, data->samples[i].index};
           }
+          if (dumping)
+            PixelHistory(cmdbuf, data, render_pass_info);
           auto encoder = cmdbuf.renderCommandEncoder(render_pass_info);
           // Geometry shader draws (MacNeutron) read resources in the object and mesh stages too.
           encoder.waitForFence(fence_, data->use_geometry ? WMTRenderStagePreRaster : WMTRenderStageVertex);

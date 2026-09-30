@@ -25,4 +25,9 @@ void LogPipeline(const std::string &line);
 // Capture mode: saves `data` as <folder>/<name>, replacing any earlier file of that name.
 void SaveCapture(const char *name, const void *data, size_t size);
 
+// Pixel history (MacNeutron capture mode): a render pipeline's description ("gfx vs=... ps=... blend0=..."), by its
+// Metal pipeline state handle, for naming the draws that change a pixel.
+void NamePipeline(uint64_t pso, const std::string &name);
+std::string PipelineName(uint64_t pso);
+
 } // namespace dxmt

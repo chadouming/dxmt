@@ -7,6 +7,7 @@
 #include <cstring>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 
 namespace dxmt {
 
@@ -122,6 +123,28 @@ void SaveCapture(const char *name, const void *data, size_t size) {
   CloseHandle(file);
   if (!ok || !MoveFileExW(temp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING))
     DeleteFileW(temp.c_str());
+}
+
+namespace {
+std::mutex pipeline_names_mutex;
+std::unordered_map<uint64_t, std::string> pipeline_names;
+} // namespace
+
+void NamePipeline(uint64_t pso, const std::string &name) {
+  if (!DXILCaptureMode() || !pso)
+    return;
+  std::lock_guard<std::mutex> lock(pipeline_names_mutex);
+  pipeline_names[pso] = name;
+}
+
+std::string PipelineName(uint64_t pso) {
+  std::lock_guard<std::mutex> lock(pipeline_names_mutex);
+  auto found = pipeline_names.find(pso);
+  if (found != pipeline_names.end())
+    return found->second;
+  char text[32];
+  snprintf(text, sizeof(text), "pso-%llx", (unsigned long long)pso);
+  return text;
 }
 
 void LogPipeline(const std::string &line) {

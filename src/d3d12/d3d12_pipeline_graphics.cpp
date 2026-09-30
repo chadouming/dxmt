@@ -257,6 +257,7 @@ class MTLD3D12GraphicsPipelineStateImpl : public MTLD3D12Pageable<MTLD3D12Graphi
 protected:
   MTL_SHADER_REFLECTION ref_vs;
   MTL_SHADER_REFLECTION ref_ps;
+  std::string capture_line_; // capture mode: this pipeline in pipelines.txt, and its name in pixel histories
 
   WMT::Reference<WMT::DepthStencilState> dsso;
   WMT::Reference<WMT::DepthStencilState> dsso_depth_readonly;
@@ -629,6 +630,7 @@ public:
       ERR("Failed to create geometry PSO: ", err.description().getUTF8String());
       return E_FAIL;
     }
+    NamePipeline(pso.handle, capture_line_ + " geometry=" + std::to_string(strip) + "," + std::to_string(index_format));
     return S_OK;
   }
 
@@ -653,6 +655,14 @@ public:
         line += std::to_string(pDesc->RTVFormats[i]) + (i + 1 < pDesc->NumRenderTargets ? "," : "");
       line += " dsv=" + std::to_string(pDesc->DSVFormat) + " topology=" + std::to_string(pDesc->PrimitiveTopologyType) +
               " samples=" + std::to_string(pDesc->SampleDesc.Count);
+      // Render target 0's blending: SrcBlend,DestBlend,BlendOp,SrcBlendAlpha,DestBlendAlpha,BlendOpAlpha (D3D12 enums).
+      auto &rt = pDesc->BlendState.RenderTarget[0];
+      line += rt.BlendEnable ? " blend0=" + std::to_string(rt.SrcBlend) + "," + std::to_string(rt.DestBlend) + "," +
+                                   std::to_string(rt.BlendOp) + "," + std::to_string(rt.SrcBlendAlpha) + "," +
+                                   std::to_string(rt.DestBlendAlpha) + "," + std::to_string(rt.BlendOpAlpha)
+                             : " blend0=off";
+      line += " mask0=" + std::to_string(rt.RenderTargetWriteMask);
+      capture_line_ = line;
       LogPipeline(line);
     }
 
@@ -762,6 +772,7 @@ public:
         ERR("Failed to create PSO: ", err.description().getUTF8String());
         return E_FAIL;
       }
+      NamePipeline(pso.handle, capture_line_);
     }
 
     // DSSO
