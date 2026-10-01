@@ -16,6 +16,10 @@ void DumpDXIL(const D3D12_SHADER_BYTECODE &Bytecode);
 // DXIL pipelines, which are captured and fail with E_NOTIMPL. For capture runs only: such a game can't render.
 bool DXILCaptureMode();
 
+// Report what Shader Model 6 games check for (feature level 12_1, SM 6.7, binding tier 3, wave ops, 64-bit atomics):
+// in capture mode, or with DXMT_D3D12_SM6=1. (MacNeutron)
+bool SM6Caps();
+
 // Capture mode also saves each root signature as <folder>/rs-<FNV-1a 64>.bin, and appends one line per pipeline to
 // <folder>/pipelines.txt naming its shaders' and root signature's hashes (see CaptureHash), for offline replays.
 uint64_t CaptureHash(const void *data, size_t size);

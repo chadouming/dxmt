@@ -58,6 +58,12 @@ bool DXILCaptureMode() {
   return !CaptureFolder().empty();
 }
 
+bool
+SM6Caps() {
+  static const bool on = DXILCaptureMode() || env::getEnvVar("DXMT_D3D12_SM6") == "1";
+  return on;
+}
+
 uint64_t CaptureHash(const void *data, size_t size) {
   auto bytes = static_cast<const uint8_t *>(data);
   uint64_t hash = 0xcbf29ce484222325ull;
