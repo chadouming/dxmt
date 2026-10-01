@@ -56,6 +56,7 @@ class MTLD3D12GraphicsCommandList : public ID3D12GraphicsCommandList2 {
 public:
   EncoderData *entry;
   size_t encoder_count = 0; // SIZE_MAX while recording
+  uint32_t barrier_count = 0; // its barrier calls (MacNeutron: M3 merges render passes only with none between)
   std::vector<TimestampResolve> timestamp_resolves;
 };
 

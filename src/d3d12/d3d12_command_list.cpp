@@ -320,6 +320,7 @@ public:
     DXMT_STAT_SCOPE("list.Close");
     if (encoder_count < std::numeric_limits<size_t>::max())
       return E_FAIL;
+    barrier_count = allocator_->barriers_;
     return allocator_->EndRecord(&encoder_count);
   };
 
@@ -1785,6 +1786,7 @@ public:
       fill.offset = Index * sizeof(UINT64);
       fill.length = 4;
       fill.value = 0;
+      current->timestamp_only = true;
     }
     if (current->num_samples == std::size(current->samples)) { // four per encoder: an empty blit encoder takes more
       allocator_->InvalidateCurrentPass();

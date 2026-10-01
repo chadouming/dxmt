@@ -53,6 +53,7 @@ struct EncoderData {
   const void *writes[16];
   uint32_t dep_count = 0;
   const uint32_t *deps = nullptr; // positions of the encoders since its list's last join that it waits on
+  bool timestamp_only = false; // MacNeutron: an empty blit holding timestamps alone (M3 moves them into a render pass)
 };
 
 struct ClearEncoderData : EncoderData {

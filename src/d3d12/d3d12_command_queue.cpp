@@ -167,6 +167,99 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
     return false;
   }
 
+  // M3 (GPU overlap spec §3.5): passes encodable as one Metal render pass: the same attachments, the later loading
+  // them all and the earlier storing them all, with the same size, sample count, geometry and query heap.
+  static bool
+  SameTarget(RenderEncoderData *a, RenderEncoderData *b) {
+    auto same = [](auto &x, auto &y) {
+      return x.attachment.ptr() == y.attachment.ptr() && x.level == y.level && x.slice == y.slice &&
+             x.depth_plane == y.depth_plane && (!y.attachment || y.load_action == WMTLoadActionLoad) &&
+             (!x.attachment || x.store_action == WMTStoreActionStore);
+    };
+    for (unsigned i = 0; i < a->colors.size(); i++)
+      if (!same(a->colors[i], b->colors[i]))
+        return false;
+    return same(a->depth, b->depth) && same(a->stencil, b->stencil) &&
+           a->render_target_width == b->render_target_width && a->render_target_height == b->render_target_height &&
+           a->render_target_array_length == b->render_target_array_length &&
+           a->default_raster_sample_count == b->default_raster_sample_count &&
+           a->dsv_planar_flags == b->dsv_planar_flags && a->dsv_readonly_flags == b->dsv_readonly_flags &&
+           a->visibility_buffer == b->visibility_buffer && a->use_geometry == b->use_geometry;
+  }
+
+  std::vector<EncoderData *> merged_, folds_;               // PlanMerge's result and scratch
+  std::vector<std::pair<EncoderData *, uint16_t>> skipped_; // encoders M3 already encoded, with their fence
+  size_t skip_ = 0;
+
+  // M3: the render passes encoded inside `base`'s Metal render pass, and the timestamp-only blits whose samples move
+  // to its end, from the encoders after base in this ExecuteCommandLists call (lists[list] is base's). A pass joins
+  // when only list boundaries and timestamp-only blits come between, with no barrier, its targets are base's
+  // (SameTarget), it resolves no indirect commands, and the samples fit (4 counter buffers, one sample each). Base
+  // must be its group's join. Fills merged_ in order, and `info` with the moved samples.
+  // ponytail: one ExecuteCommandLists call; merging across calls B coalesced would defer encoding to commit time.
+  void
+  PlanMerge(RenderEncoderData *base, unsigned list, ID3D12CommandList *const *lists, unsigned count,
+            WMTRenderPassInfo &info) {
+    merged_.clear();
+    folds_.clear();
+    if (!base->join)
+      return;
+    unsigned samples = base->num_samples;
+    auto fits = [&](EncoderData *e, unsigned &n) {
+      for (unsigned k = 0; k < e->num_samples; k++) {
+        if (n == std::size(info.sample_buffers))
+          return false;
+        for (unsigned j = 0; j < n; j++)
+          if (info.sample_buffers[j].sample_buffer == e->samples[k].buffer)
+            return false;
+        info.sample_buffers[n++] = {e->samples[k].buffer, e->samples[k].index};
+      }
+      return true;
+    };
+    EncoderData *last = base, *cursor = base->next;
+    unsigned l = list, last_list = list;
+    auto barriers = [&]() { return l == last_list ? last->barriers_last : 0u; }; // allowed before cursor, in list l
+    for (;;) {
+      if (!cursor) { // the end of list l: no barrier after `last` (or anywhere in a list of timestamps alone)
+        if (static_cast<MTLD3D12GraphicsCommandList *>(lists[l])->barrier_count != barriers() || ++l == count)
+          break;
+        cursor = static_cast<MTLD3D12GraphicsCommandList *>(lists[l])->entry;
+        continue;
+      }
+      if (cursor->type == EncoderType::Null) {
+        cursor = cursor->next;
+        continue;
+      }
+      if (cursor->barriers != barriers())
+        break;
+      if (cursor->type == EncoderType::Blit && cursor->timestamp_only) {
+        folds_.push_back(cursor);
+        cursor = cursor->next;
+        continue;
+      }
+      if (cursor->type != EncoderType::Render)
+        break;
+      auto *next = static_cast<RenderEncoderData *>(cursor);
+      unsigned n = samples;
+      bool ok = !next->pre_tail && SameTarget(base, next);
+      for (auto *f : folds_)
+        ok = ok && fits(f, n);
+      ok = ok && fits(next, n);
+      if (!ok) { // put back what `fits` wrote past the samples kept
+        for (unsigned j = samples; j < n; j++)
+          info.sample_buffers[j] = {};
+        break;
+      }
+      samples = n;
+      merged_.insert(merged_.end(), folds_.begin(), folds_.end());
+      merged_.push_back(next);
+      folds_.clear();
+      last = next;
+      last_list = l;
+      cursor = next->next;
+    }
+  }
+
   void
   CountOrder(const EncoderData *e, bool join) { // DXMT_STATS (GPU overlap spec §3.8)
     static const unsigned joins = StatId("#encoder full joins"), listed = StatId("#encoders with a dependency list"),
@@ -924,6 +1017,8 @@ public:
     auto &cmdbuf = scope.inflight.cmdbuf;
     bool dumping = Dumps().frames == Dumps().frame;
     bool serial = serial_ || dumping; // F9 dumps and pixel history see the strict order
+    skipped_.clear();
+    skip_ = 0;
     for (unsigned i = 0; i < Count; i++) {
       auto pCommandList = static_cast<MTLD3D12GraphicsCommandList *>(ppCommandLists[i]);
       if (!pCommandList->timestamp_resolves.empty()) {
@@ -934,7 +1029,19 @@ public:
         );
       }
       EncoderData *current = pCommandList->entry, *previous = nullptr;
+      list_join_ = 0; // a list's first encoder joins, even one M3 already encoded
       while (current) {
+        if (skip_ < skipped_.size() && skipped_[skip_].first == current) { // encoded inside an earlier render pass
+          if (current->position >= list_fences_.size())
+            list_fences_.resize(current->position + 1);
+          list_fences_[current->position] = skipped_[skip_++].second;
+          if (current->type == EncoderType::Render) // DXMT_STAT_COUNT keeps one counter id per call site
+            DXMT_STAT_COUNT("#render passes merged", 1);
+          else
+            DXMT_STAT_COUNT("#timestamp blits folded", 1);
+          current = current->next;
+          continue;
+        }
         unsigned pass = 0;
         if (g_stats_on) {
           static const unsigned kinds[] = {StatId("#null encoders"),   StatId("#clear passes"),
@@ -1048,6 +1155,10 @@ public:
             for (unsigned i = 0; i < data->num_samples; i++)
               render_pass_info.sample_buffers[i] = {data->samples[i].buffer, data->samples[i].index};
           }
+          if (!dumping) // M3: also in strict order, the default; dumps keep D3D12's passes
+            PlanMerge(data, i, ppCommandLists, Count, render_pass_info);
+          else
+            merged_.clear();
           auto resolve_icbs = [&](uint16_t fence) { // ExecuteIndirect's resolvers, writing the pass's ICBs
             DXMT_STAT_COUNT("#indirect resolve passes", 1);
             auto pre = cmdbuf.computeCommandEncoder(true);
@@ -1068,8 +1179,23 @@ public:
           auto encoder = cmdbuf.renderCommandEncoder(render_pass_info);
           LabelPass(encoder, pass, "render", data);
           // Geometry shader draws (MacNeutron) read resources in the object and mesh stages too.
+          // Merged passes' commands follow this pass's, in one chain, unlinked again after.
+          wmtcmd_base *tail = data->cmd_tail;
+          for (auto *m : merged_)
+            if (m->type == EncoderType::Render) {
+              tail->next.set(&static_cast<RenderEncoderData *>(m)->cmd_head);
+              tail = static_cast<RenderEncoderData *>(m)->cmd_tail;
+            }
           Encode(encoder, fence, data->use_geometry ? WMTRenderStagePreRaster : WMTRenderStageVertex, &data->cmd_head,
-                 data->cmd_tail, early);
+                 tail, early);
+          tail = data->cmd_tail;
+          for (auto *m : merged_) {
+            if (m->type == EncoderType::Render) {
+              tail->next.set(nullptr);
+              tail = static_cast<RenderEncoderData *>(m)->cmd_tail;
+            }
+            skipped_.push_back({m, fence});
+          }
           encoder.endEncoding();
           break;
         }
