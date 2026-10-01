@@ -763,39 +763,62 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
     }
   };
 
-  struct CommittingScope {
-    MTLD3D12CommandQueueImpl *queue;
-    std::lock_guard<dxmt::mutex> lock;
-    uint64_t seq;
-    InflightCommandBuffer &inflight;
-    WMT::Reference<WMT::Object> pool;
+ // MacNeutron (GPU overlap spec §3.10): one open Metal command buffer. ExecuteCommandLists and queue Wait encode into
+  // it; Signal and Present commit it, and they are every way the CPU or another queue can wait on this queue's work.
+  bool open_ = false;
 
-    CommittingScope(MTLD3D12CommandQueueImpl *queue) :
-        queue(queue),
-        lock(queue->mutex_commit_),
-        seq(queue->inflight_cmdbuf_seq_.load(std::memory_order_relaxed)),
-        inflight(queue->inflight_cmdbuf_pool_[seq % kCommandQueueSize]),
-        pool(WMT::MakeAutoreleasePool()) {
-      DXMT_STAT_SCOPE("queue.(new command buffer)");
-      inflight.cmdbuf = queue->queue_.commandBuffer();
-    };
-
-    ~CommittingScope() {
-      DXMT_STAT_SCOPE("queue.(commit)");
-      inflight.cmdbuf.commit();
-      queue->inflight_cmdbuf_seq_.fetch_add(1, std::memory_order_release);
-      queue->inflight_cmdbuf_seq_.notify_one();
-      queue->inflight_cmdbuf_count_.fetch_add(1, std::memory_order_relaxed);
-    }
-  };
-
-  CommittingScope
-  StartCommitting() {
+  // The open command buffer, after taking one of the 32 slots for a new one when none is open (under mutex_commit_).
+  InflightCommandBuffer &
+  Open() {
+    auto &inflight = inflight_cmdbuf_pool_[inflight_cmdbuf_seq_.load(std::memory_order_relaxed) % kCommandQueueSize];
+    if (open_)
+      return inflight;
     {
       DXMT_STAT_SCOPE("queue.(wait for one of 32 command buffer slots)");
       inflight_cmdbuf_count_.wait(kCommandQueueSize, std::memory_order_acquire);
     }
-    return CommittingScope(this);
+    DXMT_STAT_SCOPE("queue.(new command buffer)");
+    inflight.cmdbuf = queue_.commandBuffer();
+    open_ = true;
+    return inflight;
+  }
+
+  void
+  Commit() { // under mutex_commit_
+    if (!open_)
+      return;
+    DXMT_STAT_SCOPE("queue.(commit)");
+    DXMT_STAT_COUNT("#command buffers committed", 1);
+    inflight_cmdbuf_pool_[inflight_cmdbuf_seq_.load(std::memory_order_relaxed) % kCommandQueueSize].cmdbuf.commit();
+    open_ = false;
+    inflight_cmdbuf_seq_.fetch_add(1, std::memory_order_release);
+    inflight_cmdbuf_seq_.notify_one();
+    inflight_cmdbuf_count_.fetch_add(1, std::memory_order_relaxed);
+  }
+
+  struct CommittingScope {
+    MTLD3D12CommandQueueImpl *queue;
+    std::lock_guard<dxmt::mutex> lock;
+    WMT::Reference<WMT::Object> pool;
+    bool commit;
+    InflightCommandBuffer &inflight;
+
+    CommittingScope(MTLD3D12CommandQueueImpl *queue, bool commit) :
+        queue(queue),
+        lock(queue->mutex_commit_),
+        pool(WMT::MakeAutoreleasePool()),
+        commit(commit),
+        inflight(queue->Open()) {}
+
+    ~CommittingScope() {
+      if (commit)
+        queue->Commit();
+    }
+  };
+
+  CommittingScope
+  StartCommitting(bool commit) {
+    return CommittingScope(this, commit);
   }
 
 public:
@@ -813,6 +836,7 @@ public:
 
   ~MTLD3D12CommandQueueImpl() {
     std::lock_guard<dxmt::mutex> lock(mutex_commit_);
+    Commit(); // what ExecuteCommandLists left open
     inflight_cmdbuf_stop_.store(inflight_cmdbuf_seq_.fetch_add(1));
     inflight_cmdbuf_seq_.notify_one();
     inflight_cmdbuf_wait_thread_.join();
@@ -896,7 +920,7 @@ public:
   void STDMETHODCALLTYPE
   ExecuteCommandLists(UINT Count, ID3D12CommandList *const *ppCommandLists) {
     DXMT_STAT_SCOPE("queue.ExecuteCommandLists");
-    auto scope = StartCommitting();
+    auto scope = StartCommitting(false);
     auto &cmdbuf = scope.inflight.cmdbuf;
     bool dumping = Dumps().frames == Dumps().frame;
     bool serial = serial_ || dumping; // F9 dumps and pixel history see the strict order
@@ -1113,7 +1137,7 @@ public:
   HRESULT STDMETHODCALLTYPE
   Signal(ID3D12Fence *pFence, UINT64 Value) {
     DXMT_STAT_SCOPE("queue.Signal");
-    auto scope = StartCommitting();
+    auto scope = StartCommitting(true);
     auto &cmdbuf = scope.inflight.cmdbuf;
     auto &fence = static_cast<MTLD3D12Fence *>(pFence)->fence;
     if (cpu_work_.load(std::memory_order_acquire)) { // behind timestamps still to be written: signal once they are
@@ -1129,7 +1153,7 @@ public:
   HRESULT STDMETHODCALLTYPE
   Wait(ID3D12Fence *pFence, UINT64 Value) {
     DXMT_STAT_SCOPE("queue.Wait");
-    auto scope = StartCommitting();
+    auto scope = StartCommitting(false);
     auto &cmdbuf = scope.inflight.cmdbuf;
     static_cast<MTLD3D12Fence *>(pFence)->fence->wait(cmdbuf, Value);
     return S_OK;
@@ -1214,7 +1238,7 @@ public:
 
   HRESULT
   PresentFrame(Presenter *presenter, ID3D12Resource *backbuffer, HANDLE hLantecyWaitable, double after) {
-    auto scope = StartCommitting();
+    auto scope = StartCommitting(true);
     auto &cmdbuf = scope.inflight.cmdbuf;
 
     auto g = reinterpret_cast<MTLD3D12Resource *>(backbuffer);
