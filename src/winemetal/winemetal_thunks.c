@@ -1372,3 +1372,14 @@ MTLDevice_sampleTimestamps(obj_handle_t device, uint64_t *cpu_timestamp, uint64_
   *cpu_timestamp = params.cpu;
   *gpu_timestamp = params.gpu;
 }
+
+WINEMETAL_API uint64_t
+DispatchData_copyBytes(obj_handle_t data, void *buffer, uint64_t capacity) {
+  struct unixcall_dispatchdata_copybytes params;
+  params.data = data;
+  WMT_MEMPTR_SET(params.buffer, buffer);
+  params.capacity = capacity;
+  params.ret_size = 0;
+  UNIX_CALL(149, &params);
+  return params.ret_size;
+}

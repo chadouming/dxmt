@@ -19,6 +19,7 @@
 #include "d3d12.h"
 #include "com/com_pointer.hpp"
 #include "d3d12_device.hpp"
+#include "d3d12_shader_cache.hpp"
 #include "dxgi_interfaces.h"
 #include "log/log.hpp"
 #include "util_string.hpp"
@@ -78,8 +79,11 @@ D3D12GetDebugInterface(REFIID iid, void **debug) {
   return E_NOINTERFACE;
 }
 
-BOOL WINAPI
+// extern "C" (MacNeutron): inside namespace dxmt it was dxmt::DllMain, which the CRT never calls.
+extern "C" BOOL WINAPI
 DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {
+  if (reason == DLL_PROCESS_DETACH)
+    LogShaderCacheCounters(); // games and test programs often exit without releasing their device (spec §3.4)
   if (reason != DLL_PROCESS_ATTACH)
     return TRUE;
 

@@ -154,8 +154,6 @@ public:
   UINT IsComputePipelineState;
   uint64_t desc_hash = 0; // HashGraphicsDesc/HashComputeDesc of its description, for pipeline libraries
 
-  static HRESULT
-  InitializeShader(D3D12_SHADER_BYTECODE Bytecode, sm50_shader_t *ppShader, struct MTL_SHADER_REFLECTION *pRefl);
 };
 
 class MTLD3D12GraphicsPipelineState : public MTLD3D12PipelineState {

@@ -2045,6 +2045,9 @@ WINEMETAL_API obj_handle_t MTLCommandBuffer_computeCommandEncoderWithSampleBuffe
 
 WINEMETAL_API void MTLDevice_sampleTimestamps(obj_handle_t device, uint64_t *cpu_timestamp, uint64_t *gpu_timestamp);
 
+/* MacNeutron: copies up to `capacity` bytes of `data` into `buffer`; returns the data's full size. */
+WINEMETAL_API uint64_t DispatchData_copyBytes(obj_handle_t data, void *buffer, uint64_t capacity);
+
 enum WMTCommandBufferProperty : uint32_t {
   WMTCommandBufferPropertyKernelStartTime,
   WMTCommandBufferPropertyKernelEndTime,

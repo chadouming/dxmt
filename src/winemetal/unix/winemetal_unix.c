@@ -2947,6 +2947,22 @@ _MTLDevice_sampleTimestamps(void *obj) {
 }
 
 static NTSTATUS
+_DispatchData_copyBytes(void *obj) {
+  struct unixcall_dispatchdata_copybytes *params = obj;
+  dispatch_data_t data = (dispatch_data_t)params->data;
+  char *out = params->buffer.ptr;
+  uint64_t capacity = params->capacity;
+  dispatch_data_apply(data, ^bool(dispatch_data_t region, size_t offset, const void *bytes, size_t length) {
+    if (offset >= capacity)
+      return false;
+    memcpy(out + offset, bytes, MIN(length, capacity - offset));
+    return true;
+  });
+  params->ret_size = dispatch_data_get_size(data);
+  return STATUS_SUCCESS;
+}
+
+static NTSTATUS
 _MTLCommandBuffer_blitCommandEncoderWithSampleBuffers(void *obj) {
   struct unixcall_mtlcommandbuffer_blitcommandencoderwithsamplebuffers *params = obj;
   id<MTLCommandBuffer> cmdbuf = (id<MTLCommandBuffer>)params->cmdbuf;
@@ -3406,6 +3422,7 @@ const void *__wine_unix_call_funcs[] = {
     &_MTLSharedEvent_setWin32EventAtValues,
     &_MTLCommandBuffer_computeCommandEncoderWithSampleBuffers,
     &_MTLDevice_sampleTimestamps,
+    &_DispatchData_copyBytes,
 };
 
 #ifndef DXMT_NATIVE
@@ -3559,5 +3576,6 @@ const void *__wine_unix_call_wow64_funcs[] = {
     &_MTLSharedEvent_setWin32EventAtValues,
     &_MTLCommandBuffer_computeCommandEncoderWithSampleBuffers,
     &_MTLDevice_sampleTimestamps,
+    &_DispatchData_copyBytes,
 };
 #endif

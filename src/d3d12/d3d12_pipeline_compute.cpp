@@ -22,6 +22,7 @@
 #include "d3d12_device.hpp"
 #include "d3d12_pageable.hpp"
 #include "d3d12_pipeline.hpp"
+#include "d3d12_shader_cache.hpp"
 #include "log/log.hpp"
 #include "d3d12_dxil_dump.hpp"
 #include "../d3d10/d3d10_blob.hpp"
@@ -43,8 +44,7 @@ public:
     if (DXILCaptureMode())
       LogPipeline("cs" + CapturedShader("cs", pDesc->CS) + CapturedRootSignature(pDesc->pRootSignature));
 
-    SM50Shader shader_cs;
-    SM50Error sm50_err;
+    CachedShader shader_cs;
 
     SM50_SHADER_ROOT_SIGNATURE_DATA rootsig;
     rootsig.type = SM50_SHADER_ROOT_SIGNATURE;
@@ -62,30 +62,20 @@ public:
     common.metal_version = SM50_SHADER_METAL_310;
     common.next = &rootsig;
 
-    if (HRESULT hr = InitializeShader(pDesc->CS, &shader_cs, &ref_cs); FAILED(hr))
+    HRESULT hr;
+    if (FAILED(hr = shader_cs.Initialize(pDesc->CS)) || FAILED(hr = shader_cs.Reflection(&ref_cs)))
       return hr;
 
     threadgroup_size = {ref_cs.ThreadgroupSize[0], ref_cs.ThreadgroupSize[1], ref_cs.ThreadgroupSize[2]};
-
-    SM50ShaderBitcode cs_bitcode;
-
-    if (SM50Compile(shader_cs, (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&common, "cs_main", &cs_bitcode, &sm50_err)) {
-      return ShaderCompileFailed("cs", sm50_err);
-    }
-
-    SM50_COMPILED_BITCODE cs_bitcode_compiled;
-
-    SM50GetCompiledBitcode(cs_bitcode, &cs_bitcode_compiled);
-
-    auto cs_data = WMT::MakeDispatchData(cs_bitcode_compiled.Data, cs_bitcode_compiled.Size);
 
     auto metal = device_->GetMTLDevice();
 
     WMT::Reference<WMT::Error> err;
 
-    auto cs_lib = metal.newLibrary(cs_data, err);
-
-    auto cs_func = cs_lib.newFunction("cs_main");
+    WMT::Reference<WMT::Function> cs_func;
+    if (FAILED(hr = CompileFunction(metal, FunctionKind::Shader, shader_cs, nullptr,
+                                    (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&common, "cs_main", "cs", cs_func)))
+      return hr;
 
     // PSO
     {

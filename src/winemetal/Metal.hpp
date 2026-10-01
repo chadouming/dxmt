@@ -171,6 +171,11 @@ public:
 
 class DispatchData : public Object {
 public:
+  // Copies up to `capacity` bytes into `buffer`; returns the data's full size. (MacNeutron)
+  uint64_t
+  copyBytes(void *buffer, uint64_t capacity) {
+    return DispatchData_copyBytes(handle, buffer, capacity);
+  }
 };
 
 class Event : public Object {

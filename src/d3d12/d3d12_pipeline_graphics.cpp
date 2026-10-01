@@ -22,6 +22,7 @@
 #include "../d3d10/d3d10_blob.hpp"
 #include "d3d12_pageable.hpp"
 #include "d3d12_pipeline.hpp"
+#include "d3d12_shader_cache.hpp"
 #include "dxmt_format.hpp"
 #include "com/com_object.hpp"
 #include "com/com_pointer.hpp"
@@ -234,26 +235,6 @@ ExtractMTLInputLayoutElements(
   return S_OK;
 }
 
-HRESULT
-MTLD3D12PipelineState::InitializeShader(
-    D3D12_SHADER_BYTECODE Bytecode, sm50_shader_t *ppShader, struct MTL_SHADER_REFLECTION *pRefl
-) {
-  using namespace microsoft;
-  HRESULT hr;
-  CDXBCParser Parser;
-  if (FAILED(hr = Parser.ReadDXBC(Bytecode.pShaderBytecode, Bytecode.BytecodeLength)))
-    return hr;
-
-
-  SM50Error error;
-  if (SM50Initialize(Bytecode.pShaderBytecode, Bytecode.BytecodeLength, ppShader, pRefl, &error)) {
-    ERR("Failed to initialize shader: ", SM50GetErrorMessageString(error));
-    return E_FAIL;
-  }
-
-  return S_OK;
-}
-
 class MTLD3D12GraphicsPipelineStateImpl : public MTLD3D12Pageable<MTLD3D12GraphicsPipelineState> {
 protected:
   MTL_SHADER_REFLECTION ref_vs;
@@ -268,7 +249,7 @@ protected:
   WMT::Reference<WMT::DepthStencilState> dsso_readonly_no_stencil;
 
   // Geometry shader pipelines (see MTLD3D12GraphicsPipelineState::geometry): what the variants are compiled from.
-  SM50Shader geometry_vs_, geometry_gs_;
+  CachedShader geometry_vs_, geometry_gs_;
   std::vector<SM50_IA_INPUT_ELEMENT> geometry_elements_;
   std::vector<char> geometry_rootsig_;            // the root signature blob (the app may release its object)
   WMT::Reference<WMT::Function> geometry_ps_;     // kept alive: geometry_info_ refers to it
@@ -478,58 +459,40 @@ public:
 
   // The pixel shader, for either pipeline kind: `colors` are the render target formats InitializePSO filled.
   HRESULT
-  CompilePixelShader(const D3D12_GRAPHICS_PIPELINE_STATE_DESC *pDesc, SM50Shader &shader_ps,
+  CompilePixelShader(const D3D12_GRAPHICS_PIPELINE_STATE_DESC *pDesc, CachedShader &shader_ps,
                      const WMTColorAttachmentBlendInfo *colors, bool dual_source_blending,
                      WMT::Reference<WMT::Function> &ps_func) {
-    auto metal = device_->GetMTLDevice();
-    WMT::Reference<WMT::Error> err;
-    SM50Error sm50_err;
+    if (!pDesc->PS.pShaderBytecode)
+      return S_OK;
     SM50_SHADER_COMMON_DATA common;
     common.flags = {};
     common.type = SM50_SHADER_COMMON;
     common.metal_version = SM50_SHADER_METAL_310;
     common.next = nullptr;
-    if (pDesc->PS.pShaderBytecode) {
-      auto sha1 = Sha1HashState::compute(pDesc->PS.pShaderBytecode, pDesc->PS.BytecodeLength);
-
-      std::string ps_name = "ps_main" + sha1.string().substr(0, 8);
-      SM50_SHADER_PSO_PIXEL_SHADER_DATA data_ps;
-      data_ps.dual_source_blending = dual_source_blending;
-      data_ps.disable_depth_output = false;
-      data_ps.unorm_output_reg_mask = 0;
-      data_ps.sample_mask = pDesc->SampleMask;
-      data_ps.type = SM50_SHADER_PSO_PIXEL_SHADER;
-      data_ps.next = &common;
-
-      memset(data_ps.pixel_formats, 0, sizeof(data_ps.pixel_formats));
-      for (unsigned i = 0; i < pDesc->NumRenderTargets; i++) {
-        data_ps.pixel_formats[i] = ORIGINAL_FORMAT(colors[i].pixel_format);
-      }
-
-      SM50_SHADER_ROOT_SIGNATURE_DATA rootsig;
-      rootsig.type = SM50_SHADER_ROOT_SIGNATURE;
-      if (pDesc->pRootSignature) {
-        rootsig.bytecode_length =
-            static_cast<MTLD3D12RootSignature *>(pDesc->pRootSignature)->GetBlob(&rootsig.bytecode);
-      } else {
-        rootsig.bytecode = pDesc->PS.pShaderBytecode;
-        rootsig.bytecode_length = pDesc->PS.BytecodeLength;
-      }
-      rootsig.next = &data_ps;
-
-      SM50ShaderBitcode ps_bitcode;
-      if (SM50Compile(
-              shader_ps, (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&rootsig, ps_name.c_str(), &ps_bitcode, &sm50_err
-          )) {
-        return ShaderCompileFailed("ps", sm50_err);
-      }
-      SM50_COMPILED_BITCODE ps_bitcode_compiled;
-      SM50GetCompiledBitcode(ps_bitcode, &ps_bitcode_compiled);
-      auto ps_data = WMT::MakeDispatchData(ps_bitcode_compiled.Data, ps_bitcode_compiled.Size);
-      auto ps_lib = metal.newLibrary(ps_data, err);
-      ps_func = ps_lib.newFunction(ps_name.c_str());
+    SM50_SHADER_PSO_PIXEL_SHADER_DATA data_ps;
+    data_ps.dual_source_blending = dual_source_blending;
+    data_ps.disable_depth_output = false;
+    data_ps.unorm_output_reg_mask = 0;
+    data_ps.sample_mask = pDesc->SampleMask;
+    data_ps.type = SM50_SHADER_PSO_PIXEL_SHADER;
+    data_ps.next = &common;
+    memset(data_ps.pixel_formats, 0, sizeof(data_ps.pixel_formats));
+    for (unsigned i = 0; i < pDesc->NumRenderTargets; i++) {
+      data_ps.pixel_formats[i] = ORIGINAL_FORMAT(colors[i].pixel_format);
     }
-    return S_OK;
+    SM50_SHADER_ROOT_SIGNATURE_DATA rootsig;
+    rootsig.type = SM50_SHADER_ROOT_SIGNATURE;
+    if (pDesc->pRootSignature) {
+      rootsig.bytecode_length =
+          static_cast<MTLD3D12RootSignature *>(pDesc->pRootSignature)->GetBlob(&rootsig.bytecode);
+    } else {
+      rootsig.bytecode = pDesc->PS.pShaderBytecode;
+      rootsig.bytecode_length = pDesc->PS.BytecodeLength;
+    }
+    rootsig.next = &data_ps;
+    std::string ps_name = "ps_main" + shader_ps.digest().string().substr(0, 8);
+    return CompileFunction(device_->GetMTLDevice(), FunctionKind::Shader, shader_ps, nullptr,
+                           (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&rootsig, ps_name.c_str(), "ps", ps_func);
   }
 
   // A geometry shader pipeline (MacNeutron): everything but the object and mesh functions, which depend on the draw's
@@ -541,9 +504,12 @@ public:
     MTL_SHADER_REFLECTION ref_gs;
     if (!pDesc->VS.pShaderBytecode)
       return E_INVALIDARG;
-    if (FAILED(hr = InitializeShader(pDesc->VS, &geometry_vs_, &ref_vs)) ||
-        FAILED(hr = InitializeShader(pDesc->GS, &geometry_gs_, &ref_gs)))
+    if (FAILED(hr = geometry_vs_.Initialize(pDesc->VS)) || FAILED(hr = geometry_vs_.Reflection(&ref_vs)) ||
+        FAILED(hr = geometry_gs_.Initialize(pDesc->GS)) || FAILED(hr = geometry_gs_.Reflection(&ref_gs)))
       return hr;
+    // The strip and indexed variants compile at draw time, when the app may have freed its bytecode.
+    geometry_vs_.Keep();
+    geometry_gs_.Keep();
     geometry_elements_.resize(pDesc->InputLayout.NumElements);
     uint32_t num_elements = 0;
     if (FAILED(hr = ExtractMTLInputLayoutElements(device_, pDesc->VS.pShaderBytecode, pDesc->InputLayout.pInputElementDescs,
@@ -559,9 +525,10 @@ public:
       blob_length = static_cast<MTLD3D12RootSignature *>(pDesc->pRootSignature)->GetBlob(&blob);
     geometry_rootsig_.assign((const char *)blob, (const char *)blob + blob_length);
 
-    SM50Shader shader_ps;
+    CachedShader shader_ps;
     ref_ps = {};
-    if (pDesc->PS.pShaderBytecode && FAILED(hr = InitializeShader(pDesc->PS, &shader_ps, &ref_ps)))
+    if (pDesc->PS.pShaderBytecode &&
+        (FAILED(hr = shader_ps.Initialize(pDesc->PS)) || FAILED(hr = shader_ps.Reflection(&ref_ps))))
       return hr;
     WMT::InitializeMeshRenderPipelineInfo(geometry_info_);
     bool dual_source_blending = false;
@@ -606,22 +573,16 @@ public:
     object_args.next = &ia;
     mesh_args.next = &gs_data;
 
-    SM50ShaderBitcode object_bitcode, mesh_bitcode;
-    SM50Error sm50_err;
-    if (SM50CompileGeometryPipelineVertex(geometry_vs_, geometry_gs_, (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&object_args,
-                                          "vsgs_main", &object_bitcode, &sm50_err))
-      return ShaderCompileFailed("vs (geometry pipeline)", sm50_err);
-    if (SM50CompileGeometryPipelineGeometry(geometry_vs_, geometry_gs_, (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&mesh_args,
-                                            "gs_main", &mesh_bitcode, &sm50_err))
-      return ShaderCompileFailed("gs", sm50_err);
+    WMT::Reference<WMT::Function> object_function, mesh_function;
+    HRESULT hr;
+    if (FAILED(hr = CompileFunction(metal, FunctionKind::GeometryVertex, geometry_vs_, &geometry_gs_,
+                                    (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&object_args, "vsgs_main",
+                                    "vs (geometry pipeline)", object_function)) ||
+        FAILED(hr = CompileFunction(metal, FunctionKind::GeometryMesh, geometry_vs_, &geometry_gs_,
+                                    (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&mesh_args, "gs_main", "gs",
+                                    mesh_function)))
+      return hr;
     WMT::Reference<WMT::Error> err;
-    auto function = [&](sm50_bitcode_t bitcode, const char *name) {
-      SM50_COMPILED_BITCODE compiled;
-      SM50GetCompiledBitcode(bitcode, &compiled);
-      return metal.newLibrary(WMT::MakeDispatchData(compiled.Data, compiled.Size), err).newFunction(name);
-    };
-    auto object_function = function(object_bitcode, "vsgs_main");
-    auto mesh_function = function(mesh_bitcode, "gs_main");
     auto info = geometry_info_;
     info.object_function = object_function.handle;
     info.mesh_function = mesh_function.handle;
@@ -682,8 +643,7 @@ public:
 
     HRESULT hr;
 
-    SM50Shader shader_vs, shader_ps;
-    SM50Error sm50_err;
+    CachedShader shader_vs, shader_ps;
     auto metal = device_->GetMTLDevice();
     WMT::Reference<WMT::Error> err;
     WMT::Reference<WMT::Function> vs_func, ps_func;
@@ -694,57 +654,46 @@ public:
     common.metal_version = SM50_SHADER_METAL_310;
     common.next = nullptr;
 
-    if (pDesc->VS.pShaderBytecode) {
-      if (FAILED(hr = InitializeShader(pDesc->VS, &shader_vs, &ref_vs)))
-        return hr;
-      SM50_SHADER_IA_INPUT_LAYOUT_DATA data_ia_layout;
-      data_ia_layout.type = SM50_SHADER_IA_INPUT_LAYOUT;
-      data_ia_layout.index_buffer_format = SM50_INDEX_BUFFER_FORMAT_NONE;
-      std::vector<SM50_IA_INPUT_ELEMENT> elements(pDesc->InputLayout.NumElements);
-      hr = ExtractMTLInputLayoutElements(
-          device_, pDesc->VS.pShaderBytecode, pDesc->InputLayout.pInputElementDescs, pDesc->InputLayout.NumElements,
-          elements.data(), &data_ia_layout.num_elements
-      );
-      elements.resize(data_ia_layout.num_elements);
-      data_ia_layout.elements = elements.data();
-      if (FAILED(hr)) {
-        return hr;
-      }
-      slot_mask = 0;
-      for (auto &element : elements) {
-        slot_mask |= (1 << element.slot);
-      }
-      data_ia_layout.slot_mask = slot_mask;
-      data_ia_layout.next = &common;
-
-      SM50_SHADER_ROOT_SIGNATURE_DATA rootsig;
-      rootsig.type = SM50_SHADER_ROOT_SIGNATURE;
-      if (pDesc->pRootSignature) {
-        rootsig.bytecode_length =
-            static_cast<MTLD3D12RootSignature *>(pDesc->pRootSignature)->GetBlob(&rootsig.bytecode);
-      } else {
-        rootsig.bytecode = pDesc->VS.pShaderBytecode;
-        rootsig.bytecode_length = pDesc->VS.BytecodeLength;
-      }
-      rootsig.next = &data_ia_layout;
-
-      SM50ShaderBitcode vs_bitcode;
-
-      if (SM50Compile(
-              shader_vs, (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&rootsig, "vs_main", &vs_bitcode, &sm50_err
-          )) {
-        return ShaderCompileFailed("vs", sm50_err);
-      }
-
-      SM50_COMPILED_BITCODE vs_bitcode_compiled;
-      SM50GetCompiledBitcode(vs_bitcode, &vs_bitcode_compiled);
-      auto vs_data = WMT::MakeDispatchData(vs_bitcode_compiled.Data, vs_bitcode_compiled.Size);
-      auto vs_lib = metal.newLibrary(vs_data, err);
-      vs_func = vs_lib.newFunction("vs_main");
-    } else {
+    if (!pDesc->VS.pShaderBytecode) {
       ERR("no vertex shader");
       return E_INVALIDARG;
     }
+    if (FAILED(hr = shader_vs.Initialize(pDesc->VS)) || FAILED(hr = shader_vs.Reflection(&ref_vs)))
+      return hr;
+    SM50_SHADER_IA_INPUT_LAYOUT_DATA data_ia_layout;
+    data_ia_layout.type = SM50_SHADER_IA_INPUT_LAYOUT;
+    data_ia_layout.index_buffer_format = SM50_INDEX_BUFFER_FORMAT_NONE;
+    std::vector<SM50_IA_INPUT_ELEMENT> elements(pDesc->InputLayout.NumElements);
+    hr = ExtractMTLInputLayoutElements(
+        device_, pDesc->VS.pShaderBytecode, pDesc->InputLayout.pInputElementDescs, pDesc->InputLayout.NumElements,
+        elements.data(), &data_ia_layout.num_elements
+    );
+    elements.resize(data_ia_layout.num_elements);
+    data_ia_layout.elements = elements.data();
+    if (FAILED(hr)) {
+      return hr;
+    }
+    slot_mask = 0;
+    for (auto &element : elements) {
+      slot_mask |= (1 << element.slot);
+    }
+    data_ia_layout.slot_mask = slot_mask;
+    data_ia_layout.next = &common;
+
+    SM50_SHADER_ROOT_SIGNATURE_DATA rootsig;
+    rootsig.type = SM50_SHADER_ROOT_SIGNATURE;
+    if (pDesc->pRootSignature) {
+      rootsig.bytecode_length =
+          static_cast<MTLD3D12RootSignature *>(pDesc->pRootSignature)->GetBlob(&rootsig.bytecode);
+    } else {
+      rootsig.bytecode = pDesc->VS.pShaderBytecode;
+      rootsig.bytecode_length = pDesc->VS.BytecodeLength;
+    }
+    rootsig.next = &data_ia_layout;
+
+    if (FAILED(hr = CompileFunction(metal, FunctionKind::Shader, shader_vs, nullptr,
+                                    (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&rootsig, "vs_main", "vs", vs_func)))
+      return hr;
 
     WMTRenderPipelineInfo info;
     WMT::InitializeRenderPipelineInfo(info);
@@ -753,7 +702,8 @@ public:
 
     // MacNeutron: reflect the pixel shader first; InitializePSO reads ref_ps.PixelShader.HasCoverageOutput.
     ref_ps = {};
-    if (pDesc->PS.pShaderBytecode && FAILED(hr = InitializeShader(pDesc->PS, &shader_ps, &ref_ps)))
+    if (pDesc->PS.pShaderBytecode &&
+        (FAILED(hr = shader_ps.Initialize(pDesc->PS)) || FAILED(hr = shader_ps.Reflection(&ref_ps))))
       return hr;
 
     if (FAILED(hr = InitializePSO(pDesc, info, dual_source_blending)))

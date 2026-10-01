@@ -395,6 +395,13 @@ struct unixcall_mtldevice_sampletimestamps {
   uint64_t gpu;
 };
 
+struct unixcall_dispatchdata_copybytes {
+  obj_handle_t data;
+  struct WMTMemoryPointer buffer;
+  uint64_t capacity;
+  uint64_t ret_size;
+};
+
 struct unixcall_mtlcommandbuffer_blitcommandencoderwithsamplebuffers {
   obj_handle_t cmdbuf;
   struct WMTMemoryPointer attachments;
