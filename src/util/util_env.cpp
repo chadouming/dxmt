@@ -70,6 +70,11 @@ std::string getExeName() {
   return (n != std::string::npos) ? fullPath.substr(n + 1) : fullPath;
 }
 
+std::string getCacheExeName() {
+  std::string name = getEnvVar("DXMT_CACHE_EXE");
+  return name.empty() ? getExeName() : name;
+}
+
 std::string getExeBaseName() {
   auto exeName = getExeName();
 #ifdef _WIN32

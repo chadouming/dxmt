@@ -20,6 +20,7 @@
 #include "airconv_public.h"
 #include "d3d12_device.hpp"
 #include "d3d12_dxil_dump.hpp"
+#include "d3d12_pipeline_record.hpp"
 #include <cstdio>
 #include <string>
 #include "log/log.hpp"
@@ -109,6 +110,17 @@ ShaderCompileFailed(const char *stage, SM50Error &error) {
   auto message = SM50GetErrorMessageString(error);
   ERR("Failed to compile ", stage, " shader: ", message);
   return message.rfind("DXIL:", 0) == 0 ? E_NOTIMPL : E_FAIL;
+}
+
+// A root signature as the pipeline recorder names it; none for a pipeline without one (the shader's own).
+inline record::Blob
+RootBlob(ID3D12RootSignature *rs) {
+  if (!rs)
+    return {};
+  auto *root = static_cast<MTLD3D12RootSignature *>(rs);
+  const void *blob;
+  size_t size = root->GetBlob(&blob);
+  return {root->BlobDigest, blob, size};
 }
 
 } // namespace dxmt

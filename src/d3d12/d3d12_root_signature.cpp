@@ -27,6 +27,7 @@
 #include "dxmt_sampler.hpp"
 #include "util_math.hpp"
 #include "util_md5.hpp"
+#include "sha1/sha1_util.hpp"
 #include <cstring>
 #include <vector>
 #include "../d3d10/d3d10_blob.hpp"
@@ -508,6 +509,7 @@ CreateRootSignature(
   HRESULT hr = root_sig->Initialize();
   if (FAILED(hr))
     return hr;
+  root_sig->BlobDigest = Sha1HashState::compute(pBytecode, BytecodeLength);
   return root_sig->QueryInterface(riid, ppRootSignature);
 }
 

@@ -32,6 +32,7 @@ namespace dxmt {
 class MTLD3D12ComputePipelineStateImpl : public MTLD3D12Pageable<MTLD3D12ComputePipelineState> {
 
   MTL_SHADER_REFLECTION ref_cs;
+  Sha1Digest digest_cs_ = {}; // for the recording
 
 public:
   MTLD3D12ComputePipelineStateImpl(MTLD3D12Device *pDevice) : MTLD3D12Pageable<MTLD3D12ComputePipelineState>(pDevice) {
@@ -76,6 +77,7 @@ public:
     if (FAILED(hr = CompileFunction(metal, FunctionKind::Shader, shader_cs, nullptr,
                                     (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&common, "cs_main", "cs", cs_func)))
       return hr;
+    digest_cs_ = shader_cs.digest();
 
     // PSO
     {
@@ -92,6 +94,14 @@ public:
     }
 
     return S_OK;
+  }
+
+  // Shader pre-caching: appends this pipeline to the recording (spec §3.5), once its creation succeeded.
+  void
+  Record(const D3D12_COMPUTE_PIPELINE_STATE_DESC &desc) {
+    if (record::RecordingOn())
+      record::RecordCompute(desc, RootBlob(desc.pRootSignature),
+                            {digest_cs_, desc.CS.pShaderBytecode, desc.CS.BytecodeLength});
   }
 
   HRESULT
@@ -135,6 +145,7 @@ CreateComputePipelineState(
   if (FAILED(hr))
     return hr;
   pso->desc_hash = HashComputeDesc(*pDesc);
+  pso->Record(*pDesc);
   return pso->QueryInterface(riid, ppPipelineState);
 };
 

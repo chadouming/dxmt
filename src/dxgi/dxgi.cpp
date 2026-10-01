@@ -54,7 +54,7 @@ static void InitializeMetalCachePath() {
   if (env::getEnvVar("DXMT_USE_DEFAULT_METAL_CACHE") == "1")
     return;
   // This is the framework cache (mainly for PSOs), not managed by DXMT
-  auto metal_cache_path = str::format("dxmt/", env::getExeName(), "/com.apple.metal");
+  auto metal_cache_path = str::format("dxmt/", env::getCacheExeName(), "/com.apple.metal");
   if (!WMTSetMetalShaderCachePath(metal_cache_path.c_str())) {
     Logger::info("Failed to set Metal cache path, fallback to system default");
   }

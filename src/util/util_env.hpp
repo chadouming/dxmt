@@ -57,6 +57,13 @@ size_t matchFileExtension(const std::string &name, const char *ext);
 std::string getExeName();
 
 /**
+ * \brief The executable name DXMT's caches are kept under
+ *
+ * DXMT_CACHE_EXE when set (dxmt-replay.exe fills a game's caches), else \ref getExeName. (MacNeutron)
+ */
+std::string getCacheExeName();
+
+/**
  * \brief Gets the executable name without extension
  *
  * Same as \ref getExeName but without the file extension.

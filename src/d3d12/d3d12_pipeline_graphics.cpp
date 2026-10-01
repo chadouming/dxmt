@@ -239,6 +239,7 @@ class MTLD3D12GraphicsPipelineStateImpl : public MTLD3D12Pageable<MTLD3D12Graphi
 protected:
   MTL_SHADER_REFLECTION ref_vs;
   MTL_SHADER_REFLECTION ref_ps;
+  Sha1Digest digest_vs_ = {}, digest_ps_ = {}, digest_gs_ = {}; // the shaders' SHA-1s, for the recording
   std::string capture_line_; // capture mode: this pipeline in pipelines.txt, and its name in pixel histories
 
   WMT::Reference<WMT::DepthStencilState> dsso;
@@ -536,6 +537,9 @@ public:
       return hr;
     if (FAILED(hr = CompilePixelShader(pDesc, shader_ps, geometry_info_.colors, dual_source_blending, geometry_ps_)))
       return hr;
+    digest_vs_ = geometry_vs_.digest();
+    digest_ps_ = shader_ps.digest();
+    digest_gs_ = geometry_gs_.digest();
     geometry_info_.fragment_function = geometry_ps_.handle;
     geometry_info_.payload_memory_length = 16256; // airconv's geometry pipeline payload, as DXMT's D3D11 declares it
     geometry_info_.rasterization_enabled = pDesc->PS.pShaderBytecode || pDesc->DSVFormat != DXGI_FORMAT_UNKNOWN;
@@ -711,6 +715,8 @@ public:
 
     if (FAILED(hr = CompilePixelShader(pDesc, shader_ps, info.colors, dual_source_blending, ps_func)))
       return hr;
+    digest_vs_ = shader_vs.digest();
+    digest_ps_ = shader_ps.digest();
 
     // PSO
     {
@@ -732,6 +738,17 @@ public:
     InitializeRasterizerState(pDesc);
 
     return S_OK;
+  }
+
+  // Shader pre-caching: appends this pipeline to the recording (spec §3.5), once its creation succeeded.
+  void
+  Record(const D3D12_GRAPHICS_PIPELINE_STATE_DESC &desc) {
+    if (!record::RecordingOn())
+      return;
+    record::RecordGraphics(desc, RootBlob(desc.pRootSignature),
+                           {digest_vs_, desc.VS.pShaderBytecode, desc.VS.BytecodeLength},
+                           {digest_ps_, desc.PS.pShaderBytecode, desc.PS.BytecodeLength},
+                           {digest_gs_, desc.GS.pShaderBytecode, desc.GS.BytecodeLength});
   }
 
   HRESULT
@@ -802,6 +819,7 @@ CreateGraphicsPipelineState(
   if (FAILED(hr))
     return hr;
   pso->desc_hash = HashGraphicsDesc(*pDesc);
+  pso->Record(*pDesc);
   return pso->QueryInterface(riid, ppPipelineState);
 };
 

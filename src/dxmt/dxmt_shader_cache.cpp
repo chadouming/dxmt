@@ -37,7 +37,7 @@ ShaderCache::ShaderCache(WMTMetalVersion metal_version) {
     if (!path.ends_with('/'))
       path += "/";
   } else {
-    path = str::format("dxmt/", env::getExeName(), "/");
+    path = str::format("dxmt/", env::getCacheExeName(), "/");
   }
   path += str::format("shaders_", (unsigned int)metal_version, ".db");
   scache_writer_ = WMT::CacheWriter::alloc_init(path.c_str(), ShaderCacheVersion());

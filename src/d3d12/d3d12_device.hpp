@@ -23,6 +23,7 @@
 #include "dxgi1_2.h"
 #include "dxgi_interfaces.h"
 #include "airconv_public.h"
+#include "sha1/sha1_util.hpp"
 #include "dxmt_buffer.hpp"
 #include "dxmt_command.hpp"
 #include "dxmt_fence.hpp"
@@ -118,6 +119,7 @@ public:
 
   size_t NumStaticSamplers;
   uint64_t const *EncodedStaticSamplers;
+  Sha1Digest BlobDigest = {}; // SHA-1 of the blob it was created from, for pipeline recordings (MacNeutron)
 };
 
 class MTLD3D12CommandSignature : public ID3D12CommandSignature {
