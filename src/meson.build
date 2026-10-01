@@ -14,6 +14,7 @@ subdir('d3d10')
 
 if get_option('enable_d3d12')
 subdir('d3d12')
+subdir('replay')
 endif
 
 if get_option('enable_nvapi')
