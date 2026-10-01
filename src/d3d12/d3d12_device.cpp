@@ -17,6 +17,7 @@
  */
 
 #include "d3d12_device.hpp"
+#include "d3d12_stats.hpp"
 #include "d3d12_feature_data.hpp"
 #include "d3d12_dxil_dump.hpp"
 #include "d3d12_device_child.hpp"
@@ -317,12 +318,14 @@ public:
 
   UINT STDMETHODCALLTYPE
   GetNodeCount() {
+    DXMT_STAT_SCOPE("device.GetNodeCount");
     return 1; // FIXME
   };
 
   HRESULT
   STDMETHODCALLTYPE
   QueryInterface(REFIID riid, void **ppvObject) {
+    DXMT_STAT_SCOPE("device.QueryInterface");
     if (ppvObject == nullptr)
       return E_POINTER;
 
@@ -359,6 +362,7 @@ public:
 
   HRESULT STDMETHODCALLTYPE
   CreateCommandQueue(const D3D12_COMMAND_QUEUE_DESC *pDesc, REFIID riid, void **ppCommandQueue) {
+    DXMT_STAT_SCOPE("device.CreateCommandQueue");
     if (pDesc->Flags)
       WARN("CreateCommandQueue: flags ignored: ", pDesc->Flags);
     return dxmt::CreateCommandQueue(this, pDesc, riid, ppCommandQueue);
@@ -366,16 +370,19 @@ public:
 
   HRESULT STDMETHODCALLTYPE
   CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE Type, REFIID riid, void **ppCommandAllocator) {
+    DXMT_STAT_SCOPE("device.CreateCommandAllocator");
     return dxmt::CreateCommandAllocator(this, Type, riid, ppCommandAllocator);
   };
 
   HRESULT STDMETHODCALLTYPE
   CreateGraphicsPipelineState(const D3D12_GRAPHICS_PIPELINE_STATE_DESC *pDesc, REFIID riid, void **ppPipelineState) {
+    DXMT_STAT_SCOPE("device.CreateGraphicsPipelineState");
     return dxmt::CreateGraphicsPipelineState(this, pDesc, riid, ppPipelineState);
   };
 
   HRESULT STDMETHODCALLTYPE
   CreateComputePipelineState(const D3D12_COMPUTE_PIPELINE_STATE_DESC *pDesc, REFIID riid, void **ppPipelineState) {
+    DXMT_STAT_SCOPE("device.CreateComputePipelineState");
     return dxmt::CreateComputePipelineState(this, pDesc, riid, ppPipelineState);
   };
 
@@ -384,6 +391,7 @@ public:
       UINT NodeMask, D3D12_COMMAND_LIST_TYPE Type, ID3D12CommandAllocator *pCommandAllocator,
       ID3D12PipelineState *pInitialPipelineState, REFIID riid, void **ppCommandList
   ) {
+    DXMT_STAT_SCOPE("device.CreateCommandList");
     if (!pCommandAllocator)
       return E_INVALIDARG;
     auto allocator = static_cast<MTLD3D12CommandAllocator *>(pCommandAllocator);
@@ -392,6 +400,7 @@ public:
 
   HRESULT STDMETHODCALLTYPE
   CheckFeatureSupport(D3D12_FEATURE Feature, void *pFeatureData, UINT DataSize) {
+    DXMT_STAT_SCOPE("device.CheckFeatureSupport");
     auto metal = GetMTLDevice();
     switch (Feature) {
     case D3D12_FEATURE_ARCHITECTURE: {
@@ -712,11 +721,13 @@ public:
 
   HRESULT STDMETHODCALLTYPE
   CreateDescriptorHeap(const D3D12_DESCRIPTOR_HEAP_DESC *pDesc, REFIID riid, void **ppDescriptorHeap) {
+    DXMT_STAT_SCOPE("device.CreateDescriptorHeap");
     return dxmt::CreateDescriptorHeap(this, pDesc, riid, ppDescriptorHeap);
   };
 
   UINT STDMETHODCALLTYPE
   GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE DescriptorHeapType) {
+    DXMT_STAT_SCOPE("device.GetDescriptorHandleIncrementSize");
     switch (DescriptorHeapType) {
     case D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV:
     case D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER:
@@ -733,11 +744,13 @@ public:
   CreateRootSignature(
       UINT NodeMask, const void *pBytecode, SIZE_T BytecodeLength, REFIID riid, void **ppRootSignature
   ) {
+    DXMT_STAT_SCOPE("device.CreateRootSignature");
     return dxmt::CreateRootSignature(this, NodeMask, pBytecode, BytecodeLength, riid, ppRootSignature);
   };
 
   void STDMETHODCALLTYPE
   CreateConstantBufferView(const D3D12_CONSTANT_BUFFER_VIEW_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor) {
+    DXMT_STAT_SCOPE("device.CreateConstantBufferView");
     auto [Heap, Index] = GetShaderVisibleDescriptorHeap(this, Descriptor);
     if (pDesc)
       Heap->AddConstantBufferView(Index, pDesc->BufferLocation, pDesc->SizeInBytes);
@@ -749,6 +762,7 @@ public:
   CreateShaderResourceView(
       ID3D12Resource *pResource, const D3D12_SHADER_RESOURCE_VIEW_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor
   ) {
+    DXMT_STAT_SCOPE("device.CreateShaderResourceView");
     if (!pResource) {
       auto [Heap, Index] = GetShaderVisibleDescriptorHeap(this, Descriptor);
       Heap->AddShaderResourceView(Index, pDesc);
@@ -763,6 +777,7 @@ public:
       ID3D12Resource *pResource, ID3D12Resource *pCounter, const D3D12_UNORDERED_ACCESS_VIEW_DESC *pDesc,
       D3D12_CPU_DESCRIPTOR_HANDLE Descriptor
   ) {
+    DXMT_STAT_SCOPE("device.CreateUnorderedAccessView");
     if (!pResource) {
       auto [Heap, Index] = GetShaderVisibleDescriptorHeap(this, Descriptor);
       Heap->AddUnorderedAccessView(Index, pDesc);
@@ -776,6 +791,7 @@ public:
   CreateRenderTargetView(
       ID3D12Resource *pResource, const D3D12_RENDER_TARGET_VIEW_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor
   ) {
+    DXMT_STAT_SCOPE("device.CreateRenderTargetView");
     if (!pResource) {
       auto [Heap, Index] = GetRenderTargetHeap(this, Descriptor);
       Heap->AddRenderTarget(Index, nullptr);
@@ -789,6 +805,7 @@ public:
   CreateDepthStencilView(
       ID3D12Resource *pResource, const D3D12_DEPTH_STENCIL_VIEW_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor
   ) {
+    DXMT_STAT_SCOPE("device.CreateDepthStencilView");
     if (!pResource) {
       auto [Heap, Index] = GetRenderTargetHeap(this, Descriptor);
       Heap->AddRenderTarget(Index, nullptr);
@@ -800,6 +817,7 @@ public:
 
   void STDMETHODCALLTYPE
   CreateSampler(const D3D12_SAMPLER_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor) {
+    DXMT_STAT_SCOPE("device.CreateSampler");
     auto [Heap, Index] = GetSamplerDescriptorHeap(this, Descriptor);
     Heap->AddSampler(Index, pDesc);
   };
@@ -811,6 +829,7 @@ public:
       const D3D12_CPU_DESCRIPTOR_HANDLE *SrcDescriptorRangeOffsets, const UINT *SrcDescriptorRangeSizes,
       D3D12_DESCRIPTOR_HEAP_TYPE DescriptorHeapType
   ) {
+    DXMT_STAT_SCOPE("device.CopyDescriptors");
     unsigned int dst_range_idx, dst_idx, src_range_idx, src_idx;
     unsigned int dst_range_size, src_range_size, copy_count;
 
@@ -868,6 +887,7 @@ public:
       UINT DescriptorCount, const D3D12_CPU_DESCRIPTOR_HANDLE DstDescriptorRangeOffset,
       const D3D12_CPU_DESCRIPTOR_HANDLE SrcDescriptorRangeOffset, D3D12_DESCRIPTOR_HEAP_TYPE DescriptorHeapType
   ) {
+    DXMT_STAT_SCOPE("device.CopyDescriptorsSimple");
     CopyDescriptors(
         1, &DstDescriptorRangeOffset, &DescriptorCount, 1, &SrcDescriptorRangeOffset, &DescriptorCount,
         DescriptorHeapType
@@ -878,11 +898,13 @@ public:
   GetResourceAllocationInfo(
       D3D12_RESOURCE_ALLOCATION_INFO *__ret, UINT VisibleMask, UINT ResourceDestCount, const D3D12_RESOURCE_DESC *pDescs
   ) {
+    DXMT_STAT_SCOPE("device.GetResourceAllocationInfo");
     return GetResourceAllocationInfo1(__ret, VisibleMask, ResourceDestCount, pDescs, nullptr);
   };
 
   D3D12_HEAP_PROPERTIES *STDMETHODCALLTYPE
   GetCustomHeapProperties(D3D12_HEAP_PROPERTIES *__ret, UINT NodeMask, D3D12_HEAP_TYPE HeapType) {
+    DXMT_STAT_SCOPE("device.GetCustomHeapProperties");
     __ret->Type = D3D12_HEAP_TYPE_CUSTOM;
     __ret->CreationNodeMask = 1;
     __ret->VisibleNodeMask = 1;
@@ -911,6 +933,7 @@ public:
       const D3D12_HEAP_PROPERTIES *pHeapProps, D3D12_HEAP_FLAGS HeapFlags, const D3D12_RESOURCE_DESC *pDesc,
       D3D12_RESOURCE_STATES InitialState, const D3D12_CLEAR_VALUE *OptimizedClearValue, REFIID riid, void **ppResource
   ) {
+    DXMT_STAT_SCOPE("device.CreateCommittedResource");
     InitReturnPtr(ppResource);
     HRESULT hr = S_OK;
     hr = ValidateHeapProperties(pHeapProps, HeapFlags, advertise_numa_);
@@ -941,6 +964,7 @@ public:
 
   HRESULT STDMETHODCALLTYPE
   CreateHeap(const D3D12_HEAP_DESC *pDesc, REFIID riid, void **ppHeap) {
+    DXMT_STAT_SCOPE("device.CreateHeap");
     HRESULT hr = S_OK;
     hr = ValidateHeapProperties(&pDesc->Properties, pDesc->Flags, advertise_numa_);
     if (FAILED(hr))
@@ -953,6 +977,7 @@ public:
       ID3D12Heap *pHeap, UINT64 Offset, const D3D12_RESOURCE_DESC *pDesc, D3D12_RESOURCE_STATES InitialState,
       const D3D12_CLEAR_VALUE *OptimizedClearValue, REFIID riid, void **ppResource
   ) {
+    DXMT_STAT_SCOPE("device.CreatePlacedResource");
     InitReturnPtr(ppResource);
     if (!pHeap)
       return E_INVALIDARG;
@@ -986,6 +1011,7 @@ public:
       const D3D12_RESOURCE_DESC *pDesc, D3D12_RESOURCE_STATES InitialState,
       const D3D12_CLEAR_VALUE *OptimizedClearValue, REFIID riid, void **resource
   ) {
+    DXMT_STAT_SCOPE("device.CreateReservedResource");
     return E_NOTIMPL;
   };
 
@@ -993,21 +1019,25 @@ public:
   CreateSharedHandle(
       ID3D12DeviceChild *object, const SECURITY_ATTRIBUTES *attributes, DWORD access, const WCHAR *name, HANDLE *handle
   ) {
+    DXMT_STAT_SCOPE("device.CreateSharedHandle");
     return E_NOTIMPL;
   };
 
   HRESULT STDMETHODCALLTYPE
   OpenSharedHandle(HANDLE handle, REFIID riid, void **object) {
+    DXMT_STAT_SCOPE("device.OpenSharedHandle");
     return E_NOTIMPL;
   };
 
   HRESULT STDMETHODCALLTYPE
   OpenSharedHandleByName(const WCHAR *name, DWORD access, HANDLE *handle) {
+    DXMT_STAT_SCOPE("device.OpenSharedHandleByName");
     return E_NOTIMPL;
   };
 
   HRESULT STDMETHODCALLTYPE
   MakeResident(UINT ObjectCount, ID3D12Pageable *const *objects) {
+    DXMT_STAT_SCOPE("device.MakeResident");
     return S_OK;
   };
 
@@ -1015,16 +1045,19 @@ public:
   // nothing, as on D3DMetal.
   HRESULT STDMETHODCALLTYPE
   Evict(UINT ObjectCount, ID3D12Pageable *const *objects) {
+    DXMT_STAT_SCOPE("device.Evict");
     return S_OK;
   };
 
   HRESULT STDMETHODCALLTYPE
   CreateFence(UINT64 InitialValue, D3D12_FENCE_FLAGS Flags, REFIID riid, void **ppFence) {
+    DXMT_STAT_SCOPE("device.CreateFence");
     return dxmt::CreateFence(this, InitialValue, Flags, riid, ppFence);
   };
 
   HRESULT STDMETHODCALLTYPE
   GetDeviceRemovedReason() {
+    DXMT_STAT_SCOPE("device.GetDeviceRemovedReason");
     return S_OK;
   };
 
@@ -1032,6 +1065,7 @@ public:
       const D3D12_RESOURCE_DESC *pDesc, UINT FirstSubresource, UINT SubresourceCount, UINT64 BaseOffset,
       D3D12_PLACED_SUBRESOURCE_FOOTPRINT *pLayouts, UINT *pNumRows, UINT64 *pRowSizeInBytes, UINT64 *pTotalBytes
   ) {
+    DXMT_STAT_SCOPE("device.GetCopyableFootprints");
     UINT64 TotalBytes = 0;
     UINT64 Offset = 0;
     UINT BlockWidth = 1;
@@ -1140,11 +1174,13 @@ public:
 
   HRESULT STDMETHODCALLTYPE
   CreateQueryHeap(const D3D12_QUERY_HEAP_DESC *pDesc, REFIID riid, void **ppHeap) {
+    DXMT_STAT_SCOPE("device.CreateQueryHeap");
     return dxmt::CreateQueryHeap(this, pDesc, riid, ppHeap);
   };
 
   HRESULT STDMETHODCALLTYPE
   SetStablePowerState(WINBOOL Enable) {
+    DXMT_STAT_SCOPE("device.SetStablePowerState");
     return E_NOTIMPL;
   };
 
@@ -1153,6 +1189,7 @@ public:
       const D3D12_COMMAND_SIGNATURE_DESC *pDesc, ID3D12RootSignature *pRootSignature, REFIID riid,
       void **ppCommandSignature
   ) {
+    DXMT_STAT_SCOPE("device.CreateCommandSignature");
     return dxmt::CreateCommandSignature(this, pDesc, pRootSignature, riid, ppCommandSignature);
   };
 
@@ -1161,17 +1198,20 @@ public:
       D3D12_TILE_SHAPE *StandardTileShape, UINT *SubresourceTilingCount, UINT FirstSubresourceTiling,
       D3D12_SUBRESOURCE_TILING *SubresourceTilings
   ) {
+    DXMT_STAT_SCOPE("device.GetResourceTiling");
     IMPLEMENT_ME
   };
 
   LUID *STDMETHODCALLTYPE
   GetAdapterLuid(LUID *ret) {
+    DXMT_STAT_SCOPE("device.GetAdapterLuid");
     *ret = std::bit_cast<LUID>(__builtin_bswap64(adapter_->GetMTLDevice().registryID()));
     return ret;
   }
 
   HRESULT STDMETHODCALLTYPE
   CreatePipelineLibrary(const void *blob, SIZE_T blob_size, REFIID iid, void **lib) {
+    DXMT_STAT_SCOPE("device.CreatePipelineLibrary");
     return dxmt::CreatePipelineLibrary(this, blob, blob_size, iid, lib);
   };
 
@@ -1180,6 +1220,7 @@ public:
       ID3D12Fence *const *pFences, const UINT64 *pValues, UINT FenceCount, D3D12_MULTIPLE_FENCE_WAIT_FLAGS Flags,
       HANDLE hEvent
   ) {
+    DXMT_STAT_SCOPE("device.SetEventOnMultipleFenceCompletion");
     if (!FenceCount)
       return S_OK; // nothing to wait for; D3DMetal leaves the event alone too
     if (!pFences || !pValues)
@@ -1200,11 +1241,13 @@ public:
 
   HRESULT STDMETHODCALLTYPE
   SetResidencyPriority(UINT ObjectCount, ID3D12Pageable *const *pObjects, const D3D12_RESIDENCY_PRIORITY *pPriorities) {
+    DXMT_STAT_SCOPE("device.SetResidencyPriority");
     return S_OK;
   };
 
   HRESULT STDMETHODCALLTYPE
   CreatePipelineState(const D3D12_PIPELINE_STATE_STREAM_DESC *pDesc, REFIID riid, void **ppPipelineState) {
+    DXMT_STAT_SCOPE("device.CreatePipelineState");
     D3D12_COMPUTE_PIPELINE_STATE_DESC desc_cs{};
     D3D12_GRAPHICS_PIPELINE_STATE_DESC desc_graphics{};
     bool compute = false;
@@ -1217,11 +1260,13 @@ public:
 
   HRESULT STDMETHODCALLTYPE
   OpenExistingHeapFromAddress(const void *pAddress, REFIID riid, void **ppHeap) {
+    DXMT_STAT_SCOPE("device.OpenExistingHeapFromAddress");
     return E_NOTIMPL;
   }
 
   HRESULT STDMETHODCALLTYPE
   OpenExistingHeapFromFileMapping(HANDLE hFileMapping, REFIID riid, void **ppHeap) {
+    DXMT_STAT_SCOPE("device.OpenExistingHeapFromFileMapping");
     return E_NOTIMPL;
   }
 
@@ -1230,6 +1275,7 @@ public:
       D3D12_RESIDENCY_FLAGS Flags, UINT NumObjects, ID3D12Pageable *const *ppObjects, ID3D12Fence *pFence,
       UINT64 FenceValue
   ) {
+    DXMT_STAT_SCOPE("device.EnqueueMakeResident");
     if (!pFence)
       return E_INVALIDARG;
     return pFence->Signal(FenceValue); // already resident: the fence reaches the value at once
@@ -1239,6 +1285,7 @@ public:
   CreateCommandList1(
       UINT NodeMask, D3D12_COMMAND_LIST_TYPE Type, D3D12_COMMAND_LIST_FLAGS Flags, REFIID riid, void **ppCommandList
   ) {
+    DXMT_STAT_SCOPE("device.CreateCommandList1");
     InitReturnPtr(ppCommandList);
     if (Type != D3D12_COMMAND_LIST_TYPE_DIRECT && Type != D3D12_COMMAND_LIST_TYPE_COMPUTE &&
         Type != D3D12_COMMAND_LIST_TYPE_COPY)
@@ -1248,6 +1295,7 @@ public:
 
   HRESULT STDMETHODCALLTYPE
   CreateProtectedResourceSession(const D3D12_PROTECTED_RESOURCE_SESSION_DESC *pDesc, REFIID riid, void **ppSession) {
+    DXMT_STAT_SCOPE("device.CreateProtectedResourceSession");
     return E_NOTIMPL;
   }
 
@@ -1257,6 +1305,7 @@ public:
       D3D12_RESOURCE_STATES InitialState, const D3D12_CLEAR_VALUE *OptimizedClearValue,
       ID3D12ProtectedResourceSession *pSession, REFIID riid, void **ppResource
   ) {
+    DXMT_STAT_SCOPE("device.CreateCommittedResource1");
     if (pSession) // protected sessions aren't supported (CreateProtectedResourceSession fails)
       return E_NOTIMPL;
     return CreateCommittedResource(pHeapProps, HeapFlags, pDesc, InitialState, OptimizedClearValue, riid, ppResource);
@@ -1272,15 +1321,18 @@ public:
 
   HRESULT STDMETHODCALLTYPE
   CreateLifetimeTracker(ID3D12LifetimeOwner *owner, REFIID riid, void **tracker) {
+    DXMT_STAT_SCOPE("device.CreateLifetimeTracker");
     InitReturnPtr(tracker);
     return E_NOTIMPL;
   }
 
   void STDMETHODCALLTYPE
-  RemoveDevice() {}
+  RemoveDevice() {
+    DXMT_STAT_SCOPE("device.RemoveDevice");}
 
   HRESULT STDMETHODCALLTYPE
   EnumerateMetaCommands(UINT *count, D3D12_META_COMMAND_DESC *descs) {
+    DXMT_STAT_SCOPE("device.EnumerateMetaCommands");
     if (!count)
       return E_INVALIDARG;
     *count = 0;
@@ -1292,17 +1344,20 @@ public:
       REFGUID command_id, D3D12_META_COMMAND_PARAMETER_STAGE stage, UINT *total_size, UINT *count,
       D3D12_META_COMMAND_PARAMETER_DESC *descs
   ) {
+    DXMT_STAT_SCOPE("device.EnumerateMetaCommandParameters");
     return E_INVALIDARG; // there are no meta commands
   }
 
   HRESULT STDMETHODCALLTYPE
   CreateMetaCommand(REFGUID command_id, UINT node_mask, const void *data, SIZE_T size, REFIID riid, void **command) {
+    DXMT_STAT_SCOPE("device.CreateMetaCommand");
     InitReturnPtr(command);
     return E_INVALIDARG;
   }
 
   HRESULT STDMETHODCALLTYPE
   CreateStateObject(const D3D12_STATE_OBJECT_DESC *desc, REFIID riid, void **state_object) {
+    DXMT_STAT_SCOPE("device.CreateStateObject");
     InitReturnPtr(state_object);
     return E_NOTIMPL;
   }
@@ -1312,12 +1367,14 @@ public:
       const D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS *desc,
       D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO *info
   ) {
+    DXMT_STAT_SCOPE("device.GetRaytracingAccelerationStructurePrebuildInfo");
     if (info)
       *info = {};
   }
 
   D3D12_DRIVER_MATCHING_IDENTIFIER_STATUS STDMETHODCALLTYPE
   CheckDriverMatchingIdentifier(D3D12_SERIALIZED_DATA_TYPE type, const D3D12_SERIALIZED_DATA_DRIVER_MATCHING_IDENTIFIER *identifier) {
+    DXMT_STAT_SCOPE("device.CheckDriverMatchingIdentifier");
     return D3D12_DRIVER_MATCHING_IDENTIFIER_UNSUPPORTED_TYPE;
   }
 
@@ -1325,6 +1382,7 @@ public:
   SetBackgroundProcessingMode(
       D3D12_BACKGROUND_PROCESSING_MODE mode, D3D12_MEASUREMENTS_ACTION action, HANDLE event, WINBOOL *further_measurements
   ) {
+    DXMT_STAT_SCOPE("device.SetBackgroundProcessingMode");
     if (further_measurements)
       *further_measurements = FALSE;
     return S_OK;
@@ -1332,12 +1390,14 @@ public:
 
   HRESULT STDMETHODCALLTYPE
   AddToStateObject(const D3D12_STATE_OBJECT_DESC *addition, ID3D12StateObject *grow_from, REFIID riid, void **new_state_object) {
+    DXMT_STAT_SCOPE("device.AddToStateObject");
     InitReturnPtr(new_state_object);
     return E_NOTIMPL;
   }
 
   HRESULT STDMETHODCALLTYPE
   CreateProtectedResourceSession1(const D3D12_PROTECTED_RESOURCE_SESSION_DESC1 *desc, REFIID riid, void **session) {
+    DXMT_STAT_SCOPE("device.CreateProtectedResourceSession1");
     InitReturnPtr(session);
     return E_NOTIMPL;
   }
@@ -1347,6 +1407,7 @@ public:
       D3D12_RESOURCE_ALLOCATION_INFO *__ret, UINT VisibleMask, UINT ResourceDescCount, const D3D12_RESOURCE_DESC1 *pDescs,
       D3D12_RESOURCE_ALLOCATION_INFO1 *pAllocationInfos
   ) {
+    DXMT_STAT_SCOPE("device.GetResourceAllocationInfo2");
     std::vector<D3D12_RESOURCE_DESC> descs(ResourceDescCount);
     for (UINT i = 0; i < ResourceDescCount; i++)
       descs[i] = PlainDesc(pDescs[i]);
@@ -1359,6 +1420,7 @@ public:
       D3D12_RESOURCE_STATES InitialState, const D3D12_CLEAR_VALUE *OptimizedClearValue,
       ID3D12ProtectedResourceSession *pSession, REFIID riid, void **ppResource
   ) {
+    DXMT_STAT_SCOPE("device.CreateCommittedResource2");
     if (!pDesc)
       return E_INVALIDARG;
     auto desc = PlainDesc(*pDesc);
@@ -1370,6 +1432,7 @@ public:
       ID3D12Heap *pHeap, UINT64 Offset, const D3D12_RESOURCE_DESC1 *pDesc, D3D12_RESOURCE_STATES InitialState,
       const D3D12_CLEAR_VALUE *OptimizedClearValue, REFIID riid, void **ppResource
   ) {
+    DXMT_STAT_SCOPE("device.CreatePlacedResource1");
     if (!pDesc)
       return E_INVALIDARG;
     auto desc = PlainDesc(*pDesc);
@@ -1378,6 +1441,7 @@ public:
 
   void STDMETHODCALLTYPE
   CreateSamplerFeedbackUnorderedAccessView(ID3D12Resource *targeted, ID3D12Resource *feedback, D3D12_CPU_DESCRIPTOR_HANDLE dst) {
+    DXMT_STAT_SCOPE("device.CreateSamplerFeedbackUnorderedAccessView");
     WARN("CreateSamplerFeedbackUnorderedAccessView: sampler feedback not supported");
   }
 
@@ -1386,12 +1450,14 @@ public:
       const D3D12_RESOURCE_DESC1 *pDesc, UINT FirstSubresource, UINT SubresourceCount, UINT64 BaseOffset,
       D3D12_PLACED_SUBRESOURCE_FOOTPRINT *pLayouts, UINT *pNumRows, UINT64 *pRowSizeInBytes, UINT64 *pTotalBytes
   ) {
+    DXMT_STAT_SCOPE("device.GetCopyableFootprints1");
     auto desc = PlainDesc(*pDesc);
     GetCopyableFootprints(&desc, FirstSubresource, SubresourceCount, BaseOffset, pLayouts, pNumRows, pRowSizeInBytes, pTotalBytes);
   }
 
   HRESULT STDMETHODCALLTYPE
   CreateHeap1(const D3D12_HEAP_DESC *pDesc, ID3D12ProtectedResourceSession *pSession, REFIID riid, void **ppHeap) {
+    DXMT_STAT_SCOPE("device.CreateHeap1");
     if (pSession)
       return E_NOTIMPL; // protected sessions: none, as CreateCommittedResource1
     return CreateHeap(pDesc, riid, ppHeap);
@@ -1403,6 +1469,7 @@ public:
       const D3D12_CLEAR_VALUE *OptimizedClearValue, ID3D12ProtectedResourceSession *pSession, REFIID riid,
       void **ppResource
   ) {
+    DXMT_STAT_SCOPE("device.CreateReservedResource1");
     return E_NOTIMPL;
   }
 
@@ -1411,6 +1478,7 @@ public:
       D3D12_RESOURCE_ALLOCATION_INFO *__ret, UINT VisibleMask, UINT ResourceDestCount,
       const D3D12_RESOURCE_DESC *pDescs, D3D12_RESOURCE_ALLOCATION_INFO1 *pAllocationInfos
   ) {
+    DXMT_STAT_SCOPE("device.GetResourceAllocationInfo1");
     D3D12_RESOURCE_ALLOCATION_INFO1 resource_info;
     bool has_msaa_resource = false;
 

@@ -17,6 +17,7 @@
  */
 
 #include "d3d12_device.hpp"
+#include "d3d12_stats.hpp"
 #include "d3d12_pageable.hpp"
 #include "com/com_pointer.hpp"
 
@@ -38,6 +39,7 @@ public:
   HRESULT
   STDMETHODCALLTYPE
   QueryInterface(REFIID riid, void **ppvObject) {
+    DXMT_STAT_SCOPE("memheap.QueryInterface");
     if (ppvObject == nullptr)
       return E_POINTER;
 
@@ -96,6 +98,7 @@ public:
 
   virtual D3D12_HEAP_DESC *STDMETHODCALLTYPE
   GetDesc(D3D12_HEAP_DESC *__ret) {
+    DXMT_STAT_SCOPE("memheap.GetDesc");
     *__ret = desc_;
     return __ret;
   };

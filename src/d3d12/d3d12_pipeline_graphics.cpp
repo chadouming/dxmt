@@ -17,6 +17,7 @@
  */
 
 #include "d3d12_device.hpp"
+#include "d3d12_stats.hpp"
 #include "d3d12_dxil_dump.hpp"
 #include "../d3d10/d3d10_blob.hpp"
 #include "d3d12_pageable.hpp"
@@ -786,6 +787,7 @@ public:
   HRESULT
   STDMETHODCALLTYPE
   QueryInterface(REFIID riid, void **ppvObject) {
+    DXMT_STAT_SCOPE("gfxpso.QueryInterface");
     if (ppvObject == nullptr)
       return E_POINTER;
 
@@ -806,6 +808,7 @@ public:
 
   virtual HRESULT STDMETHODCALLTYPE
   GetCachedBlob(ID3DBlob **blob) {
+    DXMT_STAT_SCOPE("gfxpso.GetCachedBlob");
     // An empty blob, as D3DMetal: a CachedPSO is accepted and ignored at creation.
     if (!blob)
       return E_POINTER;

@@ -17,6 +17,7 @@
  */
 
 #include "DXBCParser/BlobContainer.h"
+#include "d3d12_stats.hpp"
 #include "DXBCParser/DXBCUtils.h"
 #include "com/com_object.hpp"
 #include "com/com_pointer.hpp"
@@ -247,6 +248,7 @@ template <typename Base> class MTLD3D12RootSignatureDeserializer : public ComObj
 public:
   virtual HRESULT STDMETHODCALLTYPE
   QueryInterface(REFIID riid, void **ppvObject) {
+    DXMT_STAT_SCOPE("rootsig.QueryInterface");
     if (ppvObject == nullptr)
       return E_POINTER;
 
@@ -260,6 +262,7 @@ public:
 
   virtual const D3D12_ROOT_SIGNATURE_DESC *STDMETHODCALLTYPE
   GetRootSignatureDesc() {
+    DXMT_STAT_SCOPE("rootsig.GetRootSignatureDesc");
     return &impl_.desc_1_0_.Desc_1_0;
   }
 
@@ -267,6 +270,7 @@ public:
   GetRootSignatureDescAtVersion(
       D3D_ROOT_SIGNATURE_VERSION Version, const D3D12_VERSIONED_ROOT_SIGNATURE_DESC **ppDesc
   ) {
+    DXMT_STAT_SCOPE("rootsig.GetRootSignatureDescAtVersion");
     switch (Version) {
     case D3D_ROOT_SIGNATURE_VERSION_1_0:
       *ppDesc = &impl_.desc_1_0_;
@@ -282,6 +286,7 @@ public:
 
   virtual const D3D12_VERSIONED_ROOT_SIGNATURE_DESC *STDMETHODCALLTYPE
   GetUnconvertedRootSignatureDesc() {
+    DXMT_STAT_SCOPE("rootsig.GetUnconvertedRootSignatureDesc");
     switch (impl_.raw_root_sig_->Version) {
     case D3D_ROOT_SIGNATURE_VERSION_1_0:
       return &impl_.desc_1_0_;
@@ -465,6 +470,7 @@ public:
   HRESULT
   STDMETHODCALLTYPE
   QueryInterface(REFIID riid, void **ppvObject) {
+    DXMT_STAT_SCOPE("rootsig.QueryInterface");
     if (ppvObject == nullptr)
       return E_POINTER;
 

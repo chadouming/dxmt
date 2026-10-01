@@ -17,6 +17,7 @@
  */
 
 #include "com/com_pointer.hpp"
+#include "d3d12_stats.hpp"
 #include "d3d12_device.hpp"
 #include "d3d12_pageable.hpp"
 
@@ -357,6 +358,7 @@ public:
   HRESULT
   STDMETHODCALLTYPE
   QueryInterface(REFIID riid, void **ppvObject) {
+    DXMT_STAT_SCOPE("cmdsig.QueryInterface");
     if (ppvObject == nullptr)
       return E_POINTER;
 

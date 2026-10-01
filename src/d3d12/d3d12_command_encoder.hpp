@@ -42,6 +42,7 @@ struct EncoderData {
     uint32_t index;
   } samples[4];
   uint8_t num_samples = 0;
+  uint32_t barriers = 0; // the allocator's barrier count when this encoder began (DXMT_STATS)
 };
 
 struct ClearEncoderData : EncoderData {

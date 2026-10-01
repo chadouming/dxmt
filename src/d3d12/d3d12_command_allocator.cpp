@@ -17,6 +17,7 @@
  */
 
 #include "d3d12_command_allocator.hpp"
+#include "d3d12_stats.hpp"
 #include "com/com_pointer.hpp"
 
 namespace dxmt {
@@ -90,6 +91,7 @@ MTLD3D12CommandAllocatorImpl::Initialize() {
 HRESULT
 STDMETHODCALLTYPE
 MTLD3D12CommandAllocatorImpl::QueryInterface(REFIID riid, void **ppvObject) {
+    DXMT_STAT_SCOPE("allocator.QueryInterface");
   if (ppvObject == nullptr)
     return E_POINTER;
 
@@ -110,6 +112,7 @@ MTLD3D12CommandAllocatorImpl::QueryInterface(REFIID riid, void **ppvObject) {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D12CommandAllocatorImpl::Reset() {
+    DXMT_STAT_SCOPE("allocator.Reset");
   if (encoder_last)
     return E_FAIL;
 
@@ -172,6 +175,7 @@ MTLD3D12CommandAllocatorImpl::EncodeIndirectComputeCommand(MTLD3D12CommandSignat
   info.gpu_resource_id = 0;
 
   auto icb = device_->GetMTLDevice().newIndirectCommandBuffer(info, MaxCount, WMTResourceStorageModeShared);
+  DXMT_STAT_COUNT("#indirect command buffers created", 1);
 
   auto [Ptr, Offset] = AllocateGPUHeap(sizeof(IndirectComputeCommandData), 16);
 
@@ -262,6 +266,7 @@ MTLD3D12CommandAllocatorImpl::EncodeIndirectRenderCommand(
   info.gpu_resource_id = 0;
 
   auto icb = device_->GetMTLDevice().newIndirectCommandBuffer(info, MaxCount, WMTResourceStorageModePrivate);
+  DXMT_STAT_COUNT("#indirect command buffers created", 1);
 
   auto [Ptr, Offset] = AllocateGPUHeap(sizeof(IndirectRenderCommandData), 16);
 

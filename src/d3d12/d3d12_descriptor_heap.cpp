@@ -17,6 +17,7 @@
  */
 
 #include "d3d12_device.hpp"
+#include "d3d12_stats.hpp"
 #include "d3d12_descriptor_heap.hpp"
 #include "d3d12_pageable.hpp"
 #include "com/com_pointer.hpp"
@@ -156,6 +157,7 @@ public:
   HRESULT
   STDMETHODCALLTYPE
   QueryInterface(REFIID riid, void **ppvObject) {
+    DXMT_STAT_SCOPE("heap.QueryInterface");
     if (ppvObject == nullptr)
       return E_POINTER;
 
@@ -176,18 +178,21 @@ public:
 
   virtual D3D12_DESCRIPTOR_HEAP_DESC *STDMETHODCALLTYPE
   GetDesc(D3D12_DESCRIPTOR_HEAP_DESC *__ret) {
+    DXMT_STAT_SCOPE("heap.GetDesc");
     *__ret = desc_;
     return __ret;
   }
 
   virtual D3D12_CPU_DESCRIPTOR_HANDLE *STDMETHODCALLTYPE
   GetCPUDescriptorHandleForHeapStart(D3D12_CPU_DESCRIPTOR_HANDLE *__ret) {
+    DXMT_STAT_SCOPE("heap.GetCPUDescriptorHandleForHeapStart");
     *__ret = GetShaderVisibleDescriptor(this, 0);
     return __ret;
   }
 
   virtual D3D12_GPU_DESCRIPTOR_HANDLE *STDMETHODCALLTYPE
   GetGPUDescriptorHandleForHeapStart(D3D12_GPU_DESCRIPTOR_HANDLE *__ret) {
+    DXMT_STAT_SCOPE("heap.GetGPUDescriptorHandleForHeapStart");
     __ret->ptr = argument_buffer_gpu_address_;
     return __ret;
   }
@@ -421,6 +426,7 @@ public:
   HRESULT
   STDMETHODCALLTYPE
   QueryInterface(REFIID riid, void **ppvObject) {
+    DXMT_STAT_SCOPE("heap.QueryInterface");
     if (ppvObject == nullptr)
       return E_POINTER;
 
@@ -441,18 +447,21 @@ public:
 
   virtual D3D12_DESCRIPTOR_HEAP_DESC *STDMETHODCALLTYPE
   GetDesc(D3D12_DESCRIPTOR_HEAP_DESC *__ret) {
+    DXMT_STAT_SCOPE("heap.GetDesc");
     *__ret = desc_;
     return __ret;
   }
 
   virtual D3D12_CPU_DESCRIPTOR_HANDLE *STDMETHODCALLTYPE
   GetCPUDescriptorHandleForHeapStart(D3D12_CPU_DESCRIPTOR_HANDLE *__ret) {
+    DXMT_STAT_SCOPE("heap.GetCPUDescriptorHandleForHeapStart");
     *__ret = GetRenderTargetDescriptor(this, 0);
     return __ret;
   }
 
   virtual D3D12_GPU_DESCRIPTOR_HANDLE *STDMETHODCALLTYPE
   GetGPUDescriptorHandleForHeapStart(D3D12_GPU_DESCRIPTOR_HANDLE *__ret) {
+    DXMT_STAT_SCOPE("heap.GetGPUDescriptorHandleForHeapStart");
     __ret->ptr = 0;
     return __ret;
   }
@@ -548,6 +557,7 @@ public:
   HRESULT
   STDMETHODCALLTYPE
   QueryInterface(REFIID riid, void **ppvObject) {
+    DXMT_STAT_SCOPE("heap.QueryInterface");
     if (ppvObject == nullptr)
       return E_POINTER;
 
@@ -568,18 +578,21 @@ public:
 
   virtual D3D12_DESCRIPTOR_HEAP_DESC *STDMETHODCALLTYPE
   GetDesc(D3D12_DESCRIPTOR_HEAP_DESC *__ret) {
+    DXMT_STAT_SCOPE("heap.GetDesc");
     *__ret = desc_;
     return __ret;
   }
 
   virtual D3D12_CPU_DESCRIPTOR_HANDLE *STDMETHODCALLTYPE
   GetCPUDescriptorHandleForHeapStart(D3D12_CPU_DESCRIPTOR_HANDLE *__ret) {
+    DXMT_STAT_SCOPE("heap.GetCPUDescriptorHandleForHeapStart");
     *__ret = GetSamplerDescriptor(this, 0);
     return __ret;
   }
 
   virtual D3D12_GPU_DESCRIPTOR_HANDLE *STDMETHODCALLTYPE
   GetGPUDescriptorHandleForHeapStart(D3D12_GPU_DESCRIPTOR_HANDLE *__ret) {
+    DXMT_STAT_SCOPE("heap.GetGPUDescriptorHandleForHeapStart");
     __ret->ptr = argument_buffer_gpu_address_;
     return __ret;
   }

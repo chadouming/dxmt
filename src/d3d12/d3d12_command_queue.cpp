@@ -17,6 +17,7 @@
  */
 
 #include "com/com_guid.hpp"
+#include "d3d12_stats.hpp"
 #include "com/com_pointer.hpp"
 #include "d3d12_device.hpp"
 #include "d3d12_pageable.hpp"
@@ -41,6 +42,17 @@ constexpr auto kCommandQueueSize = 32u;
 const GUID kD3D12CommandQueueDownlevelUUID = {
     0x38a8c5ef, 0x7ccb, 0x4e81, {0x91, 0x4f, 0xa6, 0xe9, 0xd0, 0x72, 0xc4, 0x94}
 };
+
+// DXMT_STATS: names each Metal encoder "pass-<n> <kind>", n as in F9's passes.txt, for Instruments' encoder list.
+template <typename Encoder>
+static void
+LabelPass(Encoder &encoder, unsigned pass, const char *kind) {
+  if (!g_stats_on)
+    return;
+  char name[32];
+  snprintf(name, sizeof(name), "pass-%u %s", pass, kind);
+  encoder.setLabel(WMT::String::string(name, WMTUTF8StringEncoding));
+}
 
 class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, IMTLSwapChainFactory> {
 
@@ -638,6 +650,7 @@ public:
   HRESULT
   STDMETHODCALLTYPE
   QueryInterface(REFIID riid, void **ppvObject) {
+    DXMT_STAT_SCOPE("queue.QueryInterface");
     if (ppvObject == nullptr)
       return E_POINTER;
 
@@ -677,6 +690,7 @@ public:
       const D3D12_TILE_RANGE_FLAGS *range_flags, const UINT *heap_range_offsets, const UINT *range_tile_counts,
       D3D12_TILE_MAPPING_FLAGS flags
   ) {
+    DXMT_STAT_SCOPE("queue.UpdateTileMappings");
     IMPLEMENT_ME
   };
 
@@ -685,11 +699,13 @@ public:
       ID3D12Resource *src_resource, const D3D12_TILED_RESOURCE_COORDINATE *src_region_start_coordinate,
       const D3D12_TILE_REGION_SIZE *region_size, D3D12_TILE_MAPPING_FLAGS flags
   ) {
+    DXMT_STAT_SCOPE("queue.CopyTileMappings");
     IMPLEMENT_ME
   };
 
   void STDMETHODCALLTYPE
   ExecuteCommandLists(UINT Count, ID3D12CommandList *const *ppCommandLists) {
+    DXMT_STAT_SCOPE("queue.ExecuteCommandLists");
     auto scope = StartCommitting();
     auto &cmdbuf = scope.inflight.cmdbuf;
     bool dumping = Dumps().frames == Dumps().frame;
@@ -702,8 +718,26 @@ public:
             scope.inflight.resolves.end(), pCommandList->timestamp_resolves.begin(), pCommandList->timestamp_resolves.end()
         );
       }
-      EncoderData *current = pCommandList->entry;
+      EncoderData *current = pCommandList->entry, *previous = nullptr;
       while (current) {
+        unsigned pass = 0;
+        if (g_stats_on) {
+          static const unsigned kinds[] = {StatId("#null encoders"),   StatId("#clear passes"),
+                                           StatId("#render passes"),   StatId("#blit passes"),
+                                           StatId("#compute passes"),  StatId("#resolve passes")};
+          static const unsigned boundaries = StatId("#encoder boundaries"),
+                                no_barrier = StatId("#encoder boundaries with no barrier");
+          pass = StatsNextPass();
+          StatCount(kinds[(int)current->type]);
+          if (current->type != EncoderType::Null) {
+            if (previous) {
+              StatCount(boundaries);
+              if (current->barriers == previous->barriers)
+                StatCount(no_barrier);
+            }
+            previous = current;
+          }
+        }
         switch (current->type) {
         case EncoderType::Null:
           break;
@@ -738,6 +772,7 @@ public:
             }
             info.render_target_array_length = data->array_length;
             auto encoder = cmdbuf.renderCommandEncoder(info);
+            LabelPass(encoder, pass, "clear");
             encoder.setLabel(WMT::String::string("ClearPass", WMTUTF8StringEncoding));
             encoder.waitForFence(fence_, WMTRenderStageFragment);
             encoder.updateFence(fence_, WMTRenderStageFragment);
@@ -801,6 +836,7 @@ public:
           if (dumping)
             PixelHistory(cmdbuf, data, render_pass_info);
           auto encoder = cmdbuf.renderCommandEncoder(render_pass_info);
+          LabelPass(encoder, pass, "render");
           // Geometry shader draws (MacNeutron) read resources in the object and mesh stages too.
           encoder.waitForFence(fence_, data->use_geometry ? WMTRenderStagePreRaster : WMTRenderStageVertex);
           encoder.encodeCommands(&data->cmd_head);
@@ -815,6 +851,7 @@ public:
             samples[i] = {data->samples[i].buffer, ~0ull, data->samples[i].index};
           auto encoder = data->num_samples ? cmdbuf.blitCommandEncoderWithSampleBuffers(samples, data->num_samples)
                                            : cmdbuf.blitCommandEncoder();
+          LabelPass(encoder, pass, "blit");
           encoder.waitForFence(fence_);
           encoder.encodeCommands(&data->cmd_head);
           encoder.updateFence(fence_);
@@ -828,6 +865,7 @@ public:
             samples[i] = {data->samples[i].buffer, ~0ull, data->samples[i].index};
           auto encoder = data->num_samples ? cmdbuf.computeCommandEncoderWithSampleBuffers(false, samples, data->num_samples)
                                            : cmdbuf.computeCommandEncoder(false);
+          LabelPass(encoder, pass, "compute");
           encoder.waitForFence(fence_);
           encoder.encodeCommands(&data->cmd_head);
           encoder.updateFence(fence_);
@@ -860,14 +898,18 @@ public:
     }
   };
 
-  void STDMETHODCALLTYPE SetMarker(UINT metadata, const void *data, UINT size) {};
+  void STDMETHODCALLTYPE SetMarker(UINT metadata, const void *data, UINT size) {
+    DXMT_STAT_SCOPE("queue.SetMarker");};
 
-  void STDMETHODCALLTYPE BeginEvent(UINT metadata, const void *data, UINT size) {};
+  void STDMETHODCALLTYPE BeginEvent(UINT metadata, const void *data, UINT size) {
+    DXMT_STAT_SCOPE("queue.BeginEvent");};
 
-  void STDMETHODCALLTYPE EndEvent() {};
+  void STDMETHODCALLTYPE EndEvent() {
+    DXMT_STAT_SCOPE("queue.EndEvent");};
 
   HRESULT STDMETHODCALLTYPE
   Signal(ID3D12Fence *pFence, UINT64 Value) {
+    DXMT_STAT_SCOPE("queue.Signal");
     auto scope = StartCommitting();
     auto &cmdbuf = scope.inflight.cmdbuf;
     auto &fence = static_cast<MTLD3D12Fence *>(pFence)->fence;
@@ -883,6 +925,7 @@ public:
 
   HRESULT STDMETHODCALLTYPE
   Wait(ID3D12Fence *pFence, UINT64 Value) {
+    DXMT_STAT_SCOPE("queue.Wait");
     auto scope = StartCommitting();
     auto &cmdbuf = scope.inflight.cmdbuf;
     static_cast<MTLD3D12Fence *>(pFence)->fence->wait(cmdbuf, Value);
@@ -891,6 +934,7 @@ public:
 
   HRESULT STDMETHODCALLTYPE
   GetTimestampFrequency(UINT64 *pFrequency) {
+    DXMT_STAT_SCOPE("queue.GetTimestampFrequency");
     if (!pFrequency)
       return E_INVALIDARG;
     *pFrequency = device_->TimestampFrequency();
@@ -899,6 +943,7 @@ public:
 
   HRESULT STDMETHODCALLTYPE
   GetClockCalibration(UINT64 *gpu_timestamp, UINT64 *cpu_timestamp) {
+    DXMT_STAT_SCOPE("queue.GetClockCalibration");
     // Metal's GPU clock with QueryPerformanceCounter read on either side (Unreal treats a failure here as fatal).
     LARGE_INTEGER before, after;
     uint64_t cpu, gpu;
@@ -914,6 +959,7 @@ public:
 
   D3D12_COMMAND_QUEUE_DESC *STDMETHODCALLTYPE
   GetDesc(D3D12_COMMAND_QUEUE_DESC *__ret) {
+    DXMT_STAT_SCOPE("queue.GetDesc");
     *__ret = desc_;
     return __ret;
   };
@@ -923,6 +969,7 @@ public:
       IDXGIFactory1 *pFactory, HWND hWnd, const DXGI_SWAP_CHAIN_DESC1 *pDesc,
       const DXGI_SWAP_CHAIN_FULLSCREEN_DESC *pFullscreenDesc, IDXGISwapChain1 **ppSwapChain
   ) {
+    DXMT_STAT_SCOPE("queue.CreateSwapChain");
     return dxmt::CreateSwapChain(pFactory, device_, this, hWnd, pDesc, pFullscreenDesc, ppSwapChain);
   }
 
@@ -932,6 +979,7 @@ public:
     // Once the present is committed: start or stop a frame capture at this boundary.
     auto &dumps = Dumps();
     uint64_t frames = ++dumps.frames;
+    StatsFrame();
     if (frames == dumps.frame + 8)
       SaveDumps();
     else if (dumps.on_key && dumps.frame == ~0ull && (GetAsyncKeyState(VK_F9) & 0x8000))

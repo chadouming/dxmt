@@ -17,6 +17,7 @@
  */
 
 #include "d3d12_device.hpp"
+#include "d3d12_stats.hpp"
 #include "d3d12_pageable.hpp"
 #include "com/com_pointer.hpp"
 #include "dxmt_format.hpp"
@@ -77,6 +78,7 @@ public:
   HRESULT
   STDMETHODCALLTYPE
   QueryInterface(REFIID riid, void **ppvObject) {
+    DXMT_STAT_SCOPE("buffer.QueryInterface");
     if (ppvObject == nullptr)
       return E_POINTER;
 
@@ -97,6 +99,7 @@ public:
 
   virtual HRESULT STDMETHODCALLTYPE
   Map(UINT Subresource, const D3D12_RANGE *pReadRange, void **ppData) {
+    DXMT_STAT_SCOPE("buffer.Map");
     if (Subresource)
       return E_INVALIDARG;
     if (heap_props_.Type == D3D12_HEAP_TYPE_DEFAULT)
@@ -107,17 +110,20 @@ public:
   };
 
   virtual void STDMETHODCALLTYPE Unmap(UINT Subresource, const D3D12_RANGE *pWrittenRange) {
+    DXMT_STAT_SCOPE("buffer.Unmap");
     // no-op
   };
 
   virtual D3D12_RESOURCE_DESC *STDMETHODCALLTYPE
   GetDesc(D3D12_RESOURCE_DESC *__ret) {
+    DXMT_STAT_SCOPE("buffer.GetDesc");
     *__ret = desc_;
     return __ret;
   };
 
   virtual D3D12_GPU_VIRTUAL_ADDRESS STDMETHODCALLTYPE
   GetGPUVirtualAddress() {
+    DXMT_STAT_SCOPE("buffer.GetGPUVirtualAddress");
     return buffer->current()->gpuAddress();
   };
 
@@ -125,6 +131,7 @@ public:
   WriteToSubresource(
       UINT DstSubresource, const D3D12_BOX *pDstBox, const void *pSrcData, UINT SrcRowPitch, UINT SrcSlicePitch
   ) {
+    DXMT_STAT_SCOPE("buffer.WriteToSubresource");
     return E_INVALIDARG;
   };
 
@@ -132,11 +139,13 @@ public:
   ReadFromSubresource(
       void *pDstData, UINT DstRowPitch, UINT DstSlicePitch, UINT SrcSubresource, const D3D12_BOX *pSrcBox
   ) {
+    DXMT_STAT_SCOPE("buffer.ReadFromSubresource");
     return E_INVALIDARG;
   };
 
   virtual HRESULT STDMETHODCALLTYPE
   GetHeapProperties(D3D12_HEAP_PROPERTIES *pHeapProps, D3D12_HEAP_FLAGS *pFlags) {
+    DXMT_STAT_SCOPE("buffer.GetHeapProperties");
     if (pHeapProps)
       *pHeapProps = heap_props_;
     if (pFlags)
@@ -146,6 +155,7 @@ public:
 
   virtual HRESULT STDMETHODCALLTYPE
   CreateShaderResourceView(const D3D12_SHADER_RESOURCE_VIEW_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor) {
+    DXMT_STAT_SCOPE("buffer.CreateShaderResourceView");
     HRESULT hr;
     D3D12_SHADER_RESOURCE_VIEW_DESC ViewDesc;
     if (!pDesc) {
@@ -190,6 +200,7 @@ public:
   CreateUnorderedAccessView(
       ID3D12Resource *pCounter, const D3D12_UNORDERED_ACCESS_VIEW_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor
   ) {
+    DXMT_STAT_SCOPE("buffer.CreateUnorderedAccessView");
     HRESULT hr;
     D3D12_UNORDERED_ACCESS_VIEW_DESC ViewDesc;
     if (!pDesc) {
@@ -238,12 +249,14 @@ public:
 
   virtual HRESULT STDMETHODCALLTYPE
   CreateRenderTargetView(const D3D12_RENDER_TARGET_VIEW_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor) {
+    DXMT_STAT_SCOPE("buffer.CreateRenderTargetView");
     IMPLEMENT_ME
     return S_OK;
   };
 
   virtual HRESULT STDMETHODCALLTYPE
   CreateDepthStencilView(const D3D12_DEPTH_STENCIL_VIEW_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor) {
+    DXMT_STAT_SCOPE("buffer.CreateDepthStencilView");
     IMPLEMENT_ME
     return S_OK;
   };
@@ -252,6 +265,7 @@ public:
       UINT *TotalTileCount, D3D12_PACKED_MIP_INFO *PackedMipInfo, D3D12_TILE_SHAPE *StandardTitleShape,
       UINT *SubresourceTilingCount, UINT FirstSubresourceTiling, D3D12_SUBRESOURCE_TILING *SubresourceTilings
   ) {
+    DXMT_STAT_SCOPE("buffer.GetResourceTiling");
     IMPLEMENT_ME
   };
 };

@@ -85,6 +85,7 @@ class MTLD3D12CommandAllocatorImpl : public MTLD3D12Pageable<MTLD3D12CommandAllo
   EncoderData *encoder_last;
   EncoderData *encoder_current;
   size_t encoder_count_;
+  uint32_t barriers_ = 0; // ResourceBarrier calls recorded (DXMT_STATS: encoder boundaries with no barrier)
 
   small_vector<EncoderData, 64> encoder_lists_;
 
@@ -173,6 +174,7 @@ public:
   T *
   AllocatePass() {
     auto p = (new (AllocateCPUHeap(sizeof(T), alignof(T))) T());
+    p->barriers = barriers_;
     encoder_current = p;
     return p;
   };

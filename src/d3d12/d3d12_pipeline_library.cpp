@@ -18,6 +18,7 @@
 
 // Pipeline libraries (MacNeutron): D3DMetal's semantics, see the D3D12 stubs spec §3.1.7.
 #include "d3d12_device.hpp"
+#include "d3d12_stats.hpp"
 #include "d3d12_device_child.hpp"
 #include "com/com_pointer.hpp"
 #include <cstring>
@@ -150,6 +151,7 @@ public:
 
   HRESULT STDMETHODCALLTYPE
   QueryInterface(REFIID riid, void **ppvObject) {
+    DXMT_STAT_SCOPE("library.QueryInterface");
     if (!ppvObject)
       return E_POINTER;
     *ppvObject = nullptr;
@@ -163,6 +165,7 @@ public:
 
   HRESULT STDMETHODCALLTYPE
   StorePipeline(LPCWSTR pName, ID3D12PipelineState *pPipeline) {
+    DXMT_STAT_SCOPE("library.StorePipeline");
     if (!pName || !pPipeline)
       return E_INVALIDARG;
     std::lock_guard lock(mutex_);
@@ -174,6 +177,7 @@ public:
 
   HRESULT STDMETHODCALLTYPE
   LoadGraphicsPipeline(LPCWSTR pName, const D3D12_GRAPHICS_PIPELINE_STATE_DESC *pDesc, REFIID riid, void **pp) {
+    DXMT_STAT_SCOPE("library.LoadGraphicsPipeline");
     if (!pDesc)
       return E_INVALIDARG;
     return Load(pName, HashGraphicsDesc(*pDesc), [&](ID3D12PipelineState **pso) {
@@ -183,6 +187,7 @@ public:
 
   HRESULT STDMETHODCALLTYPE
   LoadComputePipeline(LPCWSTR pName, const D3D12_COMPUTE_PIPELINE_STATE_DESC *pDesc, REFIID riid, void **pp) {
+    DXMT_STAT_SCOPE("library.LoadComputePipeline");
     if (!pDesc)
       return E_INVALIDARG;
     return Load(pName, HashComputeDesc(*pDesc), [&](ID3D12PipelineState **pso) {
@@ -192,6 +197,7 @@ public:
 
   HRESULT STDMETHODCALLTYPE
   LoadPipeline(LPCWSTR pName, const D3D12_PIPELINE_STATE_STREAM_DESC *pDesc, REFIID riid, void **pp) {
+    DXMT_STAT_SCOPE("library.LoadPipeline");
     D3D12_GRAPHICS_PIPELINE_STATE_DESC graphics{};
     D3D12_COMPUTE_PIPELINE_STATE_DESC compute{};
     bool is_compute = false;
@@ -203,6 +209,7 @@ public:
 
   SIZE_T STDMETHODCALLTYPE
   GetSerializedSize() {
+    DXMT_STAT_SCOPE("library.GetSerializedSize");
     std::lock_guard lock(mutex_);
     return SerializedSize();
   }
@@ -218,6 +225,7 @@ public:
 
   HRESULT STDMETHODCALLTYPE
   Serialize(void *pData, SIZE_T DataSizeInBytes) {
+    DXMT_STAT_SCOPE("library.Serialize");
     std::lock_guard lock(mutex_); // one lock for the size and the write: a store in between would overflow pData
     if (!pData || DataSizeInBytes < SerializedSize())
       return E_INVALIDARG;

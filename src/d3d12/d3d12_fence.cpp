@@ -17,6 +17,7 @@
  */
 
 #include "d3d12_device.hpp"
+#include "d3d12_stats.hpp"
 #include "d3d12_device_child.hpp"
 #include "com/com_pointer.hpp"
 #include "log/log.hpp"
@@ -41,6 +42,7 @@ public:
   HRESULT
   STDMETHODCALLTYPE
   QueryInterface(REFIID riid, void **ppvObject) {
+    DXMT_STAT_SCOPE("fence.QueryInterface");
     if (ppvObject == nullptr)
       return E_POINTER;
 
@@ -61,11 +63,13 @@ public:
 
   UINT64 STDMETHODCALLTYPE
   GetCompletedValue() {
+    DXMT_STAT_SCOPE("fence.GetCompletedValue");
     return fence->completedValue();
   }
 
   HRESULT STDMETHODCALLTYPE
   SetEventOnCompletion(UINT64 Value, HANDLE Event) {
+    DXMT_STAT_SCOPE("fence.SetEventOnCompletion");
     if (GetCompletedValue() >= Value) {
       if (Event)
         SetEvent(Event);
@@ -81,12 +85,14 @@ public:
 
   HRESULT STDMETHODCALLTYPE
   Signal(UINT64 Value) {
+    DXMT_STAT_SCOPE("fence.Signal");
     fence->signal(Value);
     return S_OK;
   }
 
   D3D12_FENCE_FLAGS STDMETHODCALLTYPE
   GetCreationFlags() {
+    DXMT_STAT_SCOPE("fence.GetCreationFlags");
     return flags_;
   }
 };

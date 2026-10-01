@@ -17,6 +17,7 @@
  */
 
 #include "com/com_pointer.hpp"
+#include "d3d12_stats.hpp"
 #include "d3d12_pageable.hpp"
 #include <algorithm>
 #include <cstring>
@@ -68,6 +69,7 @@ public:
   HRESULT
   STDMETHODCALLTYPE
   QueryInterface(REFIID riid, void **ppvObject) {
+    DXMT_STAT_SCOPE("queryheap.QueryInterface");
     if (ppvObject == nullptr)
       return E_POINTER;
 

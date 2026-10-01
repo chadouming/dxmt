@@ -17,6 +17,7 @@
  */
 
 #include "d3d12_device.hpp"
+#include "d3d12_stats.hpp"
 #include "dxgi_interfaces.h"
 #include "dxgi_object.hpp"
 #include "dxmt_hud_state.hpp"
@@ -237,6 +238,7 @@ public:
   HRESULT
   STDMETHODCALLTYPE
   QueryInterface(REFIID riid, void **ppvObject) final {
+    DXMT_STAT_SCOPE("swapchain.QueryInterface");
     if (ppvObject == nullptr)
       return E_POINTER;
 
@@ -259,6 +261,7 @@ public:
   HRESULT
   STDMETHODCALLTYPE
   GetParent(REFIID riid, void **parent) final {
+    DXMT_STAT_SCOPE("swapchain.GetParent");
     return factory_->QueryInterface(riid, parent);
   };
 
@@ -266,12 +269,14 @@ public:
   HRESULT
   STDMETHODCALLTYPE
   Present(UINT sync_interval, UINT flags) final {
+    DXMT_STAT_SCOPE("swapchain.Present");
     return Present1(sync_interval, flags, nullptr);
   };
 
   HRESULT
   STDMETHODCALLTYPE
   GetBuffer(UINT Buffer, REFIID riid, void **ppSurface) final {
+    DXMT_STAT_SCOPE("swapchain.GetBuffer");
     if (Buffer >= backbuffers_.size())
       return DXGI_ERROR_NOT_FOUND;
     return backbuffers_[Buffer]->QueryInterface(riid, ppSurface);
@@ -281,6 +286,7 @@ public:
   HRESULT
   STDMETHODCALLTYPE
   SetFullscreenState(BOOL Fullscreen, IDXGIOutput *pTarget) final {
+    DXMT_STAT_SCOPE("swapchain.SetFullscreenState");
     Com<IDXGIOutput1> target;
 
     if (pTarget) {
@@ -456,6 +462,7 @@ public:
   HRESULT
   STDMETHODCALLTYPE
   GetFullscreenState(BOOL *pFullscreen, IDXGIOutput **ppTarget) final {
+    DXMT_STAT_SCOPE("swapchain.GetFullscreenState");
     HRESULT hr = S_OK;
 
     if (pFullscreen != nullptr)
@@ -470,6 +477,7 @@ public:
   HRESULT
   STDMETHODCALLTYPE
   GetDesc(DXGI_SWAP_CHAIN_DESC *pDesc) final {
+    DXMT_STAT_SCOPE("swapchain.GetDesc");
     if (!pDesc)
       return E_INVALIDARG;
 
@@ -493,6 +501,7 @@ public:
   HRESULT
   STDMETHODCALLTYPE
   ResizeBuffers(UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT Format, UINT flags) final {
+    DXMT_STAT_SCOPE("swapchain.ResizeBuffers");
     if (Width == 0 || Height == 0) {
       wsi::getWindowSize(hWnd, &desc_.Width, &desc_.Height);
     } else {
@@ -543,6 +552,7 @@ public:
   HRESULT
   STDMETHODCALLTYPE
   ResizeTarget(const DXGI_MODE_DESC *pDesc) final {
+    DXMT_STAT_SCOPE("swapchain.ResizeTarget");
     if (!pDesc)
       return DXGI_ERROR_INVALID_CALL;
 
@@ -620,6 +630,7 @@ public:
   HRESULT
   STDMETHODCALLTYPE
   GetContainingOutput(IDXGIOutput **ppOutput) final {
+    DXMT_STAT_SCOPE("swapchain.GetContainingOutput");
     InitReturnPtr(ppOutput);
     
     if (!wsi::isWindow(hWnd))
@@ -643,6 +654,7 @@ public:
   HRESULT
   STDMETHODCALLTYPE
   GetFrameStatistics(DXGI_FRAME_STATISTICS *stats) final {
+    DXMT_STAT_SCOPE("swapchain.GetFrameStatistics");
     DEBUG("DXGISwapChain::GetFrameStatistics: stub");
     stats->PresentCount = presentation_count_;
     stats->SyncRefreshCount = presentation_count_;
@@ -655,6 +667,7 @@ public:
   HRESULT
   STDMETHODCALLTYPE
   GetLastPresentCount(UINT *last_present_count) final {
+    DXMT_STAT_SCOPE("swapchain.GetLastPresentCount");
     if (last_present_count == NULL) {
       return E_POINTER;
     }
@@ -665,6 +678,7 @@ public:
   HRESULT
   STDMETHODCALLTYPE
   GetDesc1(DXGI_SWAP_CHAIN_DESC1 *pDesc) final {
+    DXMT_STAT_SCOPE("swapchain.GetDesc1");
     if (pDesc == NULL) {
       return E_POINTER;
     }
@@ -675,6 +689,7 @@ public:
   HRESULT
   STDMETHODCALLTYPE
   GetFullscreenDesc(DXGI_SWAP_CHAIN_FULLSCREEN_DESC *pDesc) final {
+    DXMT_STAT_SCOPE("swapchain.GetFullscreenDesc");
     if (pDesc == NULL) {
       return E_POINTER;
     }
@@ -685,6 +700,7 @@ public:
   HRESULT
   STDMETHODCALLTYPE
   GetHwnd(HWND *pHwnd) final {
+    DXMT_STAT_SCOPE("swapchain.GetHwnd");
     if (pHwnd == NULL) {
       return E_POINTER;
     }
@@ -695,6 +711,7 @@ public:
   HRESULT
   STDMETHODCALLTYPE
   GetCoreWindow(REFIID refiid, void **ppUnk) final {
+    DXMT_STAT_SCOPE("swapchain.GetCoreWindow");
     ERR("Not implemented");
     return E_NOTIMPL;
   };
@@ -703,6 +720,7 @@ public:
   HRESULT
   STDMETHODCALLTYPE
   Present1(UINT SyncInterval, UINT PresentFlags, const DXGI_PRESENT_PARAMETERS *pPresentParameters) final {
+    DXMT_STAT_SCOPE("swapchain.Present1");
     HRESULT hr = S_OK;
     if (desc_.Width == 0 || desc_.Height == 0)
       hr = DXGI_STATUS_OCCLUDED;
@@ -724,53 +742,62 @@ public:
 
   BOOL STDMETHODCALLTYPE
   IsTemporaryMonoSupported() final {
+    DXMT_STAT_SCOPE("swapchain.IsTemporaryMonoSupported");
     return FALSE;
   };
 
   HRESULT
   STDMETHODCALLTYPE
   GetRestrictToOutput(IDXGIOutput **ppRestrictToOutput) final {
+    DXMT_STAT_SCOPE("swapchain.GetRestrictToOutput");
     IMPLEMENT_ME;
   };
 
   HRESULT
   STDMETHODCALLTYPE
   SetBackgroundColor(const DXGI_RGBA *pColor) final {
+    DXMT_STAT_SCOPE("swapchain.SetBackgroundColor");
     IMPLEMENT_ME;
   };
 
   HRESULT
   STDMETHODCALLTYPE
   GetBackgroundColor(DXGI_RGBA *pColor) final {
+    DXMT_STAT_SCOPE("swapchain.GetBackgroundColor");
     IMPLEMENT_ME;
   };
 
   HRESULT
   STDMETHODCALLTYPE
   SetRotation(DXGI_MODE_ROTATION Rotation) final {
+    DXMT_STAT_SCOPE("swapchain.SetRotation");
     IMPLEMENT_ME;
   };
 
   HRESULT
   STDMETHODCALLTYPE
   GetRotation(DXGI_MODE_ROTATION *pRotation) final {
+    DXMT_STAT_SCOPE("swapchain.GetRotation");
     IMPLEMENT_ME;
   };
 
   HRESULT STDMETHODCALLTYPE
   SetSourceSize(UINT width, UINT height) override {
+    DXMT_STAT_SCOPE("swapchain.SetSourceSize");
     IMPLEMENT_ME
     return S_OK;
   };
 
   HRESULT STDMETHODCALLTYPE
   GetSourceSize(UINT *width, UINT *height) override {
+    DXMT_STAT_SCOPE("swapchain.GetSourceSize");
     IMPLEMENT_ME
     return S_OK;
   };
 
   HRESULT STDMETHODCALLTYPE
   SetMaximumFrameLatency(UINT max_latency) override {
+    DXMT_STAT_SCOPE("swapchain.SetMaximumFrameLatency");
     if (max_latency == 0 || max_latency > DXGI_MAX_SWAP_CHAIN_BUFFERS) {
       return E_INVALIDARG;
     }
@@ -784,6 +811,7 @@ public:
 
   HRESULT STDMETHODCALLTYPE
   GetMaximumFrameLatency(UINT *max_latency) override {
+    DXMT_STAT_SCOPE("swapchain.GetMaximumFrameLatency");
     if (max_latency) {
       *max_latency = frame_latency;
     }
@@ -792,6 +820,7 @@ public:
 
   HANDLE STDMETHODCALLTYPE
   GetFrameLatencyWaitableObject() override {
+    DXMT_STAT_SCOPE("swapchain.GetFrameLatencyWaitableObject");
     if (!(desc_.Flags & DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT)) {
       return nullptr;
     }
@@ -808,16 +837,19 @@ public:
 
   HRESULT STDMETHODCALLTYPE
   SetMatrixTransform(const DXGI_MATRIX_3X2_F *matrix) override {
+    DXMT_STAT_SCOPE("swapchain.SetMatrixTransform");
     return DXGI_ERROR_INVALID_CALL;
   };
 
   HRESULT STDMETHODCALLTYPE
   GetMatrixTransform(DXGI_MATRIX_3X2_F *matrix) override {
+    DXMT_STAT_SCOPE("swapchain.GetMatrixTransform");
     return DXGI_ERROR_INVALID_CALL;
   };
 
   HRESULT STDMETHODCALLTYPE
   CheckColorSpaceSupport(DXGI_COLOR_SPACE_TYPE ColorSpace, UINT *pColorSpaceSupport) override {
+    DXMT_STAT_SCOPE("swapchain.CheckColorSpaceSupport");
     if (!pColorSpaceSupport)
       return E_INVALIDARG;
     *pColorSpaceSupport = CGColorSpace_checkColorSpaceSupported(ConvertColorSpace(ColorSpace, false))
@@ -828,6 +860,7 @@ public:
 
   UINT STDMETHODCALLTYPE
   GetCurrentBackBufferIndex() override {
+    DXMT_STAT_SCOPE("swapchain.GetCurrentBackBufferIndex");
     return presentation_count_ % backbuffers_.size();
   }
 
@@ -837,12 +870,14 @@ public:
       UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT Format, UINT SwapChainFlags, const UINT *pCreationNodeMask,
       IUnknown *const *ppPresentQueue
   ) override {
+    DXMT_STAT_SCOPE("swapchain.ResizeBuffers1");
     WARN("DXGISwapChain3::ResizeBuffers1: ignoring d3d12 related parameters");
     return ResizeBuffers(BufferCount, Width, Height, Format, SwapChainFlags);
   }
 
   HRESULT STDMETHODCALLTYPE
   SetColorSpace1(DXGI_COLOR_SPACE_TYPE ColorSpace) override {
+    DXMT_STAT_SCOPE("swapchain.SetColorSpace1");
     auto target_color_space = ConvertColorSpace(ColorSpace, LayerSupportEDR());
     if (presenter->changeLayerColorSpace(target_color_space)) {
       // TODO(d3d12): flush command queue
@@ -853,6 +888,7 @@ public:
 
   HRESULT STDMETHODCALLTYPE
   SetHDRMetaData(DXGI_HDR_METADATA_TYPE Type, UINT Size, void *pMetaData) override {
+    DXMT_STAT_SCOPE("swapchain.SetHDRMetaData");
     return S_OK;
     if (Type == DXGI_HDR_METADATA_TYPE_NONE) {
       presenter->changeHDRMetadata(nullptr);

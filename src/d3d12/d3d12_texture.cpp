@@ -17,6 +17,7 @@
  */
 
 #include "d3d12_device.hpp"
+#include "d3d12_stats.hpp"
 #include "d3d12_pageable.hpp"
 #include "dxmt_format.hpp"
 #include "com/com_pointer.hpp"
@@ -233,6 +234,7 @@ public:
   HRESULT
   STDMETHODCALLTYPE
   QueryInterface(REFIID riid, void **ppvObject) {
+    DXMT_STAT_SCOPE("texture.QueryInterface");
     if (ppvObject == nullptr)
       return E_POINTER;
 
@@ -253,6 +255,7 @@ public:
 
   virtual HRESULT STDMETHODCALLTYPE
   Map(UINT Subresource, const D3D12_RANGE *pReadRange, void **ppData) {
+    DXMT_STAT_SCOPE("texture.Map");
     if (!IsCpuVisibleHeap(&heap_props_))
       return E_INVALIDARG;
     UINT subresource_count = desc_.MipLevels;
@@ -265,16 +268,19 @@ public:
     return S_OK;
   };
 
-  virtual void STDMETHODCALLTYPE Unmap(UINT Subresource, const D3D12_RANGE *pWrittenRange) {};
+  virtual void STDMETHODCALLTYPE Unmap(UINT Subresource, const D3D12_RANGE *pWrittenRange) {
+    DXMT_STAT_SCOPE("texture.Unmap");};
 
   virtual D3D12_RESOURCE_DESC *STDMETHODCALLTYPE
   GetDesc(D3D12_RESOURCE_DESC *__ret) {
+    DXMT_STAT_SCOPE("texture.GetDesc");
     *__ret = desc_;
     return __ret;
   };
 
   virtual D3D12_GPU_VIRTUAL_ADDRESS STDMETHODCALLTYPE
   GetGPUVirtualAddress() {
+    DXMT_STAT_SCOPE("texture.GetGPUVirtualAddress");
     return 0;
   };
 
@@ -282,6 +288,7 @@ public:
   WriteToSubresource(
       UINT DstSubresource, const D3D12_BOX *pDstBox, const void *pSrcData, UINT SrcRowPitch, UINT SrcSlicePitch
   ) {
+    DXMT_STAT_SCOPE("texture.WriteToSubresource");
     if (desc_.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE3D)
       SrcSlicePitch = 0;
     if (desc_.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL)
@@ -319,6 +326,7 @@ public:
   ReadFromSubresource(
       void *pDstData, UINT DstRowPitch, UINT DstSlicePitch, UINT SrcSubresource, const D3D12_BOX *pSrcBox
   ) {
+    DXMT_STAT_SCOPE("texture.ReadFromSubresource");
     if (desc_.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE3D)
       DstSlicePitch = 0;
     if (desc_.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL)
@@ -354,6 +362,7 @@ public:
 
   virtual HRESULT STDMETHODCALLTYPE
   GetHeapProperties(D3D12_HEAP_PROPERTIES *pHeapProps, D3D12_HEAP_FLAGS *pFlags) {
+    DXMT_STAT_SCOPE("texture.GetHeapProperties");
     if (pHeapProps)
       *pHeapProps = heap_props_;
     if (pFlags)
@@ -363,6 +372,7 @@ public:
 
   virtual HRESULT STDMETHODCALLTYPE
   CreateShaderResourceView(const D3D12_SHADER_RESOURCE_VIEW_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor) {
+    DXMT_STAT_SCOPE("texture.CreateShaderResourceView");
     HRESULT hr;
     D3D12_SHADER_RESOURCE_VIEW_DESC ViewDesc;
     if (!pDesc) {
@@ -526,6 +536,7 @@ public:
   CreateUnorderedAccessView(
       ID3D12Resource *pCounter, const D3D12_UNORDERED_ACCESS_VIEW_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor
   ) {
+    DXMT_STAT_SCOPE("texture.CreateUnorderedAccessView");
     HRESULT hr;
     D3D12_UNORDERED_ACCESS_VIEW_DESC ViewDesc;
     if (!pDesc) {
@@ -613,6 +624,7 @@ public:
 
   virtual HRESULT STDMETHODCALLTYPE
   CreateRenderTargetView(const D3D12_RENDER_TARGET_VIEW_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor) {
+    DXMT_STAT_SCOPE("texture.CreateRenderTargetView");
     HRESULT hr;
     D3D12_RENDER_TARGET_VIEW_DESC ViewDesc;
     if (!pDesc) {
@@ -732,6 +744,7 @@ public:
 
   virtual HRESULT STDMETHODCALLTYPE
   CreateDepthStencilView(const D3D12_DEPTH_STENCIL_VIEW_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE Descriptor) {
+    DXMT_STAT_SCOPE("texture.CreateDepthStencilView");
     HRESULT hr;
     D3D12_DEPTH_STENCIL_VIEW_DESC ViewDesc;
     if (!pDesc) {
@@ -836,6 +849,7 @@ public:
       UINT *TotalTileCount, D3D12_PACKED_MIP_INFO *PackedMipInfo, D3D12_TILE_SHAPE *StandardTitleShape,
       UINT *SubresourceTilingCount, UINT FirstSubresourceTiling, D3D12_SUBRESOURCE_TILING *SubresourceTilings
   ) {
+    DXMT_STAT_SCOPE("texture.GetResourceTiling");
     IMPLEMENT_ME
   };
 };

@@ -17,6 +17,7 @@
  */
 
 #include "d3d12_command_allocator.hpp"
+#include "d3d12_stats.hpp"
 #include "com/com_pointer.hpp"
 #include "dxmt_format.hpp"
 
@@ -256,6 +257,7 @@ public:
   HRESULT
   STDMETHODCALLTYPE
   QueryInterface(REFIID riid, void **ppvObject) {
+    DXMT_STAT_SCOPE("list.QueryInterface");
     if (ppvObject == nullptr)
       return E_POINTER;
 
@@ -277,11 +279,13 @@ public:
 
   D3D12_COMMAND_LIST_TYPE STDMETHODCALLTYPE
   GetType() {
+    DXMT_STAT_SCOPE("list.GetType");
     return D3D12_COMMAND_LIST_TYPE_DIRECT;
   }
 
   HRESULT STDMETHODCALLTYPE
   Close() {
+    DXMT_STAT_SCOPE("list.Close");
     if (encoder_count < std::numeric_limits<size_t>::max())
       return E_FAIL;
     return allocator_->EndRecord(&encoder_count);
@@ -289,6 +293,7 @@ public:
 
   HRESULT STDMETHODCALLTYPE
   Reset(ID3D12CommandAllocator *pAllocator, ID3D12PipelineState *pInitialState) {
+    DXMT_STAT_SCOPE("list.Reset");
     if (encoder_count == std::numeric_limits<size_t>::max())
       return E_FAIL;
     return Initialize(pAllocator, pInitialState);
@@ -296,6 +301,7 @@ public:
 
   void STDMETHODCALLTYPE
   ClearState(ID3D12PipelineState *pPipelineState) {
+    DXMT_STAT_SCOPE("list.ClearState");
     allocator_->InvalidateCurrentPass();
     ResetState(pPipelineState);
   };
@@ -574,6 +580,7 @@ public:
 
   void STDMETHODCALLTYPE
   DrawInstanced(UINT VertexCountPerInstance, UINT InstanceCount, UINT StartVertexLocation, UINT StartInstanceLocation) {
+    DXMT_STAT_SCOPE("list.DrawInstanced");
     WMTPrimitiveType primitive_type;
     uint32_t cp_count;
     if (!to_metal_primitive_type(topology_, primitive_type, cp_count))
@@ -610,6 +617,7 @@ public:
       UINT IndexCountPerInstance, UINT InstanceCount, UINT StartVertexLocation, INT BaseVertexLocation,
       UINT StartInstanceLocation
   ) {
+    DXMT_STAT_SCOPE("list.DrawIndexedInstanced");
     WMTPrimitiveType primitive_type;
     uint32_t cp_count;
     if (!to_metal_primitive_type(topology_, primitive_type, cp_count))
@@ -718,6 +726,7 @@ public:
 
   void STDMETHODCALLTYPE
   Dispatch(UINT X, UINT Y, UINT Z) {
+    DXMT_STAT_SCOPE("list.Dispatch");
     if (!PreDispatch())
       return;
 
@@ -813,6 +822,7 @@ public:
   CopyBufferRegion(
       ID3D12Resource *pDstBuffer, UINT64 DstOffset, ID3D12Resource *pSrcBuffer, UINT64 SrcOffset, UINT64 ByteCount
   ) {
+    DXMT_STAT_SCOPE("list.CopyBufferRegion");
     if (!pDstBuffer || !pSrcBuffer)
       return;
     if (!PreBlit())
@@ -832,6 +842,7 @@ public:
       const D3D12_TEXTURE_COPY_LOCATION *pDst, UINT DstX, UINT DstY, UINT DstZ, const D3D12_TEXTURE_COPY_LOCATION *pSrc,
       const D3D12_BOX *pSrcBox
   ) {
+    DXMT_STAT_SCOPE("list.CopyTextureRegion");
     if (!pDst || !pSrc)
       return;
     if (!PreBlit())
@@ -1038,6 +1049,7 @@ public:
 
   void STDMETHODCALLTYPE
   CopyResource(ID3D12Resource *pDstResource, ID3D12Resource *pSrcResource) {
+    DXMT_STAT_SCOPE("list.CopyResource");
     auto *pDst = static_cast<MTLD3D12Resource *>(pDstResource);
     auto *pSrc = static_cast<MTLD3D12Resource *>(pSrcResource);
     if (!pDst || !pSrc || (pDst == pSrc))
@@ -1090,6 +1102,7 @@ public:
       const D3D12_TILE_REGION_SIZE *tile_region_size, ID3D12Resource *buffer, UINT64 buffer_offset,
       D3D12_TILE_COPY_FLAGS flags
   ) {
+    DXMT_STAT_SCOPE("list.CopyTiles");
     IMPLEMENT_ME
   };
 
@@ -1097,6 +1110,7 @@ public:
       ID3D12Resource *pDstResource, UINT DstSubresource, ID3D12Resource *pSrcResource, UINT SrcSubresource,
       DXGI_FORMAT Format
   ) {
+    DXMT_STAT_SCOPE("list.ResolveSubresource");
     auto *pDst = static_cast<MTLD3D12Resource *>(pDstResource);
     auto *pSrc = static_cast<MTLD3D12Resource *>(pSrcResource);
 
@@ -1147,11 +1161,13 @@ public:
 
   void STDMETHODCALLTYPE
   IASetPrimitiveTopology(D3D12_PRIMITIVE_TOPOLOGY Topology) {
+    DXMT_STAT_SCOPE("list.IASetPrimitiveTopology");
     topology_ = Topology;
   };
 
   void STDMETHODCALLTYPE
   RSSetViewports(UINT NumViewports, const D3D12_VIEWPORT *pViewports) {
+    DXMT_STAT_SCOPE("list.RSSetViewports");
     if (NumViewports > D3D12_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE)
       return;
     num_viewports = NumViewports;
@@ -1163,6 +1179,7 @@ public:
 
   void STDMETHODCALLTYPE
   RSSetScissorRects(UINT NumRects, const D3D12_RECT *rects) {
+    DXMT_STAT_SCOPE("list.RSSetScissorRects");
     if (NumRects > D3D12_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE)
       return;
     num_scissors = NumRects;
@@ -1174,6 +1191,7 @@ public:
 
   void STDMETHODCALLTYPE
   OMSetBlendFactor(const FLOAT BlendFactors[4]) {
+    DXMT_STAT_SCOPE("list.OMSetBlendFactor");
     if (BlendFactors) {
       memcpy(blend_factor_, BlendFactors, std::size(blend_factor_) * sizeof(blend_factor_[0]));
     } else {
@@ -1187,6 +1205,7 @@ public:
 
   void STDMETHODCALLTYPE
   OMSetStencilRef(UINT StencilRef) {
+    DXMT_STAT_SCOPE("list.OMSetStencilRef");
     if (stencil_ref_ == (UINT8)StencilRef)
       return;
     stencil_ref_ = (UINT8)StencilRef;
@@ -1195,6 +1214,7 @@ public:
 
   void STDMETHODCALLTYPE
   SetPipelineState(ID3D12PipelineState *pPSO) {
+    DXMT_STAT_SCOPE("list.SetPipelineState");
     if (!pPSO) {
       pso_graphics_ = nullptr;
       pso_compute_ = nullptr;
@@ -1222,18 +1242,24 @@ public:
   };
 
   void STDMETHODCALLTYPE ResourceBarrier(UINT Count, const D3D12_RESOURCE_BARRIER *barriers) {
+    DXMT_STAT_SCOPE("list.ResourceBarrier");
+    allocator_->barriers_++;
+    DXMT_STAT_COUNT("#resource barriers", Count);
     // TODO: in the initial implementation, we force synchronize everything and ignore barriers (which can be used as
     // optimization hints later)
   };
 
-  void STDMETHODCALLTYPE ExecuteBundle(ID3D12GraphicsCommandList *CommandList) { IMPLEMENT_ME };
+  void STDMETHODCALLTYPE ExecuteBundle(ID3D12GraphicsCommandList *CommandList) {
+    DXMT_STAT_SCOPE("list.ExecuteBundle"); IMPLEMENT_ME };
 
   void STDMETHODCALLTYPE SetDescriptorHeaps(UINT HeapCount, ID3D12DescriptorHeap *const *Heaps) {
+    DXMT_STAT_SCOPE("list.SetDescriptorHeaps");
     // no need to do anything here because because we encode the full descriptor table address in root argument
   };
 
   void STDMETHODCALLTYPE
   SetComputeRootSignature(ID3D12RootSignature *pRootSignature) {
+    DXMT_STAT_SCOPE("list.SetComputeRootSignature");
     if (rootsig_compute_.ptr() == pRootSignature)
       return;
     if (pRootSignature) {
@@ -1247,6 +1273,7 @@ public:
 
   void STDMETHODCALLTYPE
   SetGraphicsRootSignature(ID3D12RootSignature *pRootSignature) {
+    DXMT_STAT_SCOPE("list.SetGraphicsRootSignature");
     if (rootsig_graphics_.ptr() == pRootSignature)
       return;
     if (pRootSignature) {
@@ -1259,6 +1286,7 @@ public:
   };
 
   void STDMETHODCALLTYPE SetComputeRootDescriptorTable(UINT Index, D3D12_GPU_DESCRIPTOR_HANDLE BaseDescriptor) {
+    DXMT_STAT_SCOPE("list.SetComputeRootDescriptorTable");
     if (!rootsig_compute_)
       return;
     if (Index > rootsig_compute_->ParameterSlots)
@@ -1269,6 +1297,7 @@ public:
 
   void STDMETHODCALLTYPE
   SetGraphicsRootDescriptorTable(UINT Index, D3D12_GPU_DESCRIPTOR_HANDLE BaseDescriptor) {
+    DXMT_STAT_SCOPE("list.SetGraphicsRootDescriptorTable");
     if (!rootsig_graphics_)
       return;
     if (Index > rootsig_graphics_->ParameterSlots)
@@ -1278,6 +1307,7 @@ public:
   };
 
   void STDMETHODCALLTYPE SetComputeRoot32BitConstant(UINT Index, UINT Data, UINT DstOffset) {
+    DXMT_STAT_SCOPE("list.SetComputeRoot32BitConstant");
     if (!rootsig_compute_)
       return;
     if (Index > rootsig_compute_->ParameterSlots)
@@ -1289,6 +1319,7 @@ public:
 
   void STDMETHODCALLTYPE
   SetGraphicsRoot32BitConstant(UINT Index, UINT Data, UINT DstOffset) {
+    DXMT_STAT_SCOPE("list.SetGraphicsRoot32BitConstant");
     if (!rootsig_graphics_)
       return;
     if (Index > rootsig_graphics_->ParameterSlots)
@@ -1300,6 +1331,7 @@ public:
 
   void STDMETHODCALLTYPE
   SetComputeRoot32BitConstants(UINT Index, UINT ConstantCount, const void *pData, UINT DstOffset) {
+    DXMT_STAT_SCOPE("list.SetComputeRoot32BitConstants");
     if (!rootsig_compute_)
       return;
     if (Index > rootsig_compute_->ParameterSlots)
@@ -1314,6 +1346,7 @@ public:
 
   void STDMETHODCALLTYPE
   SetGraphicsRoot32BitConstants(UINT Index, UINT ConstantCount, const void *pData, UINT DstOffset) {
+    DXMT_STAT_SCOPE("list.SetGraphicsRoot32BitConstants");
     if (!rootsig_graphics_)
       return;
     if (Index > rootsig_graphics_->ParameterSlots)
@@ -1327,6 +1360,7 @@ public:
   };
 
   void STDMETHODCALLTYPE SetComputeRootConstantBufferView(UINT Index, D3D12_GPU_VIRTUAL_ADDRESS VA) {
+    DXMT_STAT_SCOPE("list.SetComputeRootConstantBufferView");
     if (!rootsig_compute_)
       return;
     if (Index > rootsig_compute_->ParameterSlots)
@@ -1337,6 +1371,7 @@ public:
 
   void STDMETHODCALLTYPE
   SetGraphicsRootConstantBufferView(UINT Index, D3D12_GPU_VIRTUAL_ADDRESS VA) {
+    DXMT_STAT_SCOPE("list.SetGraphicsRootConstantBufferView");
     if (!rootsig_graphics_)
       return;
     if (Index > rootsig_graphics_->ParameterSlots)
@@ -1346,6 +1381,7 @@ public:
   };
 
   void STDMETHODCALLTYPE SetComputeRootShaderResourceView(UINT Index, D3D12_GPU_VIRTUAL_ADDRESS VA) {
+    DXMT_STAT_SCOPE("list.SetComputeRootShaderResourceView");
     if (!rootsig_compute_)
       return;
     if (Index > rootsig_compute_->ParameterSlots)
@@ -1356,6 +1392,7 @@ public:
 
   void STDMETHODCALLTYPE
   SetGraphicsRootShaderResourceView(UINT Index, D3D12_GPU_VIRTUAL_ADDRESS VA) {
+    DXMT_STAT_SCOPE("list.SetGraphicsRootShaderResourceView");
     if (!rootsig_graphics_)
       return;
     if (Index > rootsig_graphics_->ParameterSlots)
@@ -1365,6 +1402,7 @@ public:
   };
 
   void STDMETHODCALLTYPE SetComputeRootUnorderedAccessView(UINT Index, D3D12_GPU_VIRTUAL_ADDRESS VA) {
+    DXMT_STAT_SCOPE("list.SetComputeRootUnorderedAccessView");
     if (!rootsig_compute_)
       return;
     if (Index > rootsig_compute_->ParameterSlots)
@@ -1375,6 +1413,7 @@ public:
 
   void STDMETHODCALLTYPE
   SetGraphicsRootUnorderedAccessView(UINT Index, D3D12_GPU_VIRTUAL_ADDRESS VA) {
+    DXMT_STAT_SCOPE("list.SetGraphicsRootUnorderedAccessView");
     if (!rootsig_graphics_)
       return;
     if (Index > rootsig_graphics_->ParameterSlots)
@@ -1385,6 +1424,7 @@ public:
 
   void STDMETHODCALLTYPE
   IASetIndexBuffer(const D3D12_INDEX_BUFFER_VIEW *pView) {
+    DXMT_STAT_SCOPE("list.IASetIndexBuffer");
     auto index_buffer_allocation = pView ? device_->LookupBufferByVA(pView->BufferLocation, &index_offset) : nullptr;
     if (index_buffer_allocation) {
       index_buffer_address = pView->BufferLocation;
@@ -1400,6 +1440,7 @@ public:
 
   void STDMETHODCALLTYPE
   IASetVertexBuffers(UINT StartSlot, UINT Count, const D3D12_VERTEX_BUFFER_VIEW *Views) {
+    DXMT_STAT_SCOPE("list.IASetVertexBuffers");
     if (!Views)
       return;
     
@@ -1410,6 +1451,7 @@ public:
   };
 
   void STDMETHODCALLTYPE SOSetTargets(UINT StartSlot, UINT Count, const D3D12_STREAM_OUTPUT_BUFFER_VIEW *Views) {
+    DXMT_STAT_SCOPE("list.SOSetTargets");
     IMPLEMENT_ME
   };
 
@@ -1418,6 +1460,7 @@ public:
       UINT NumRTV, const D3D12_CPU_DESCRIPTOR_HANDLE *RTVs, WINBOOL SingleDescriptor,
       const D3D12_CPU_DESCRIPTOR_HANDLE *DSV
   ) {
+    DXMT_STAT_SCOPE("list.OMSetRenderTargets");
     allocator_->InvalidateCurrentPass();
 
     num_rtvs = NumRTV;
@@ -1434,6 +1477,7 @@ public:
       D3D12_CPU_DESCRIPTOR_HANDLE DSV, D3D12_CLEAR_FLAGS Flags, FLOAT Depth, UINT8 Stencil, UINT RectCount,
       const D3D12_RECT *Rects
   ) {
+    DXMT_STAT_SCOPE("list.ClearDepthStencilView");
     auto [Heap, Index] = GetRenderTargetHeap(device_, DSV);
     auto AttachmentDesc = Heap->GetRenderTarget(Index);
     if (!AttachmentDesc.Texture)
@@ -1474,6 +1518,7 @@ public:
   ClearRenderTargetView(
       D3D12_CPU_DESCRIPTOR_HANDLE RTV, const FLOAT Color[4], UINT RectCount, const D3D12_RECT *Rects
   ) {
+    DXMT_STAT_SCOPE("list.ClearRenderTargetView");
     auto [Heap, Index] = GetRenderTargetHeap(device_, RTV);
     auto AttachmentDesc = Heap->GetRenderTarget(Index);
     if (!AttachmentDesc.Texture)
@@ -1516,6 +1561,7 @@ public:
       D3D12_GPU_DESCRIPTOR_HANDLE GpuHandle, D3D12_CPU_DESCRIPTOR_HANDLE CpuHandle, ID3D12Resource *pResource,
       const UINT Values[4], UINT RectCount, const D3D12_RECT *pRects
   ) {
+    DXMT_STAT_SCOPE("list.ClearUnorderedAccessViewUint");
     auto [Heap, Index] = GetShaderVisibleDescriptorHeap(device_, CpuHandle);
     auto &Descriptor = Heap->GetDescriptor(Index);
     auto color = std::array<uint32_t, 4>({Values[0], Values[1], Values[2], Values[3]});
@@ -1570,6 +1616,7 @@ public:
       D3D12_GPU_DESCRIPTOR_HANDLE GpuHandle, D3D12_CPU_DESCRIPTOR_HANDLE CpuHandle, ID3D12Resource *pResource,
       const float Values[4], UINT RectCount, const D3D12_RECT *pRects
   ) {
+    DXMT_STAT_SCOPE("list.ClearUnorderedAccessViewFloat");
     auto [Heap, Index] = GetShaderVisibleDescriptorHeap(device_, CpuHandle);
     auto &Descriptor = Heap->GetDescriptor(Index);
     auto color = std::array<float, 4>({Values[0], Values[1], Values[2], Values[3]});
@@ -1620,11 +1667,13 @@ public:
   };
 
   void STDMETHODCALLTYPE DiscardResource(ID3D12Resource *pResource, const D3D12_DISCARD_REGION *pRegion) {
+    DXMT_STAT_SCOPE("list.DiscardResource");
     // do nothing for now
   };
 
   void STDMETHODCALLTYPE
   BeginQuery(ID3D12QueryHeap *pHeap, D3D12_QUERY_TYPE Type, UINT Index) {
+    DXMT_STAT_SCOPE("list.BeginQuery");
     // ponytail: occlusion only; timestamps and statistics resolve to zeros
     if (!pHeap || (Type != D3D12_QUERY_TYPE_OCCLUSION && Type != D3D12_QUERY_TYPE_BINARY_OCCLUSION))
       return;
@@ -1677,6 +1726,7 @@ public:
 
   void STDMETHODCALLTYPE
   EndQuery(ID3D12QueryHeap *pHeap, D3D12_QUERY_TYPE Type, UINT Index) {
+    DXMT_STAT_SCOPE("list.EndQuery");
     if (Type == D3D12_QUERY_TYPE_TIMESTAMP && pHeap)
       return EndTimestamp(static_cast<MTLD3D12QueryHeap *>(pHeap), Index);
     if (Type != D3D12_QUERY_TYPE_OCCLUSION && Type != D3D12_QUERY_TYPE_BINARY_OCCLUSION)
@@ -1690,6 +1740,7 @@ public:
       ID3D12QueryHeap *pHeap, D3D12_QUERY_TYPE Type, UINT StartIndex, UINT QueryCount, ID3D12Resource *pDstBuffer,
       UINT64 AlignedDstBufferOffset
   ) {
+    DXMT_STAT_SCOPE("list.ResolveQueryData");
     if (!pHeap || !pDstBuffer || !QueryCount || !PreBlit())
       return;
     auto heap = static_cast<MTLD3D12QueryHeap *>(pHeap);
@@ -1740,20 +1791,25 @@ public:
   };
 
   void STDMETHODCALLTYPE SetPredication(ID3D12Resource *pBuffer, UINT64 AlignedBufferOffset, D3D12_PREDICATION_OP Op) {
+    DXMT_STAT_SCOPE("list.SetPredication");
     IMPLEMENT_ME
   };
 
   // Debugger annotations (PIX events): nothing to do here, as on the queue.
-  void STDMETHODCALLTYPE SetMarker(UINT Metadata, const void *data, UINT size) {};
+  void STDMETHODCALLTYPE SetMarker(UINT Metadata, const void *data, UINT size) {
+    DXMT_STAT_SCOPE("list.SetMarker");};
 
-  void STDMETHODCALLTYPE BeginEvent(UINT Metadata, const void *data, UINT size) {};
+  void STDMETHODCALLTYPE BeginEvent(UINT Metadata, const void *data, UINT size) {
+    DXMT_STAT_SCOPE("list.BeginEvent");};
 
-  void STDMETHODCALLTYPE EndEvent() {};
+  void STDMETHODCALLTYPE EndEvent() {
+    DXMT_STAT_SCOPE("list.EndEvent");};
 
   void STDMETHODCALLTYPE ExecuteIndirect(
       ID3D12CommandSignature *pCommandSignature, UINT MaxCommandCount, ID3D12Resource *pArgBuffer,
       UINT64 ArgBufferOffset, ID3D12Resource *pCountBuffer, UINT64 CountBufferOffset
   ) {
+    DXMT_STAT_SCOPE("list.ExecuteIndirect");
     auto sig = static_cast<MTLD3D12CommandSignature *>(pCommandSignature);
     auto arg_buffer = static_cast<MTLD3D12Resource *>(pArgBuffer);
     if (!arg_buffer || !arg_buffer->buffer)
@@ -1822,6 +1878,7 @@ public:
       ID3D12Resource *pDstBuffer, UINT64 DstOffset, ID3D12Resource *pSrcBuffer, UINT64 SrcOffset, UINT Dependencies,
       ID3D12Resource *const *ppDependentResources, const D3D12_SUBRESOURCE_RANGE_UINT64 *pDependentSubresourceRanges
   ) {
+    DXMT_STAT_SCOPE("list.AtomicCopyBufferUINT");
     IMPLEMENT_ME
   }
 
@@ -1830,16 +1887,19 @@ public:
       ID3D12Resource *pDstBuffer, UINT64 DstOffset, ID3D12Resource *pSrcBuffer, UINT64 SrcOffset, UINT Dependencies,
       ID3D12Resource *const *ppDependentResources, const D3D12_SUBRESOURCE_RANGE_UINT64 *pDependentSubresourceRanges
   ) {
+    DXMT_STAT_SCOPE("list.AtomicCopyBufferUINT64");
     IMPLEMENT_ME
   }
 
   void STDMETHODCALLTYPE
   OMSetDepthBounds(FLOAT Min, FLOAT Max) {
+    DXMT_STAT_SCOPE("list.OMSetDepthBounds");
     WARN("OMSetDepthBounds: ignoring (", Min, ", ", Max, ")");
   }
 
   void STDMETHODCALLTYPE
   SetSamplePositions(UINT NumSamplesPerPixel, UINT NumPixels, D3D12_SAMPLE_POSITION *pSamplePositions) {
+    DXMT_STAT_SCOPE("list.SetSamplePositions");
     IMPLEMENT_ME
   }
 
@@ -1848,11 +1908,13 @@ public:
       ID3D12Resource *pDstResource, UINT DstSubresource, UINT DstX, UINT DstY, ID3D12Resource *pSrcResource,
       UINT SrcSubresource, D3D12_RECT *pSrcRect, DXGI_FORMAT Format, D3D12_RESOLVE_MODE ResolveMode
   ) {
+    DXMT_STAT_SCOPE("list.ResolveSubresourceRegion");
     IMPLEMENT_ME
   }
 
   void STDMETHODCALLTYPE
   SetViewInstanceMask(UINT Mask) {
+    DXMT_STAT_SCOPE("list.SetViewInstanceMask");
     IMPLEMENT_ME
   }
 
@@ -1860,6 +1922,7 @@ public:
   WriteBufferImmediate(
       UINT Count, const D3D12_WRITEBUFFERIMMEDIATE_PARAMETER *pParams, const D3D12_WRITEBUFFERIMMEDIATE_MODE *pModes
   ) {
+    DXMT_STAT_SCOPE("list.WriteBufferImmediate");
     IMPLEMENT_ME
   }
 };
@@ -1869,6 +1932,7 @@ MTLD3D12CommandAllocatorImpl::CreateCommandList(
     UINT NodeMask, D3D12_COMMAND_LIST_TYPE Type, ID3D12PipelineState *pInitialPipelineState, REFIID riid,
     void **ppCommandList
 ) {
+    DXMT_STAT_SCOPE("list.CreateCommandList");
   if (Type != type_)
     return E_INVALIDARG;
 
