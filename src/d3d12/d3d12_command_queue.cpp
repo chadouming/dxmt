@@ -44,13 +44,27 @@ const GUID kD3D12CommandQueueDownlevelUUID = {
 };
 
 // DXMT_STATS: names each Metal encoder "pass-<n> <kind>", n as in F9's passes.txt, for Instruments' encoder list.
+// Render passes add their targets, "3c+d 1728x1120", to tell passes apart when their numbers shift between frames.
 template <typename Encoder>
 static void
-LabelPass(Encoder &encoder, unsigned pass, const char *kind) {
+LabelPass(Encoder &encoder, unsigned pass, const char *kind, RenderEncoderData *render = nullptr) {
   if (!g_stats_on)
     return;
-  char name[32];
-  snprintf(name, sizeof(name), "pass-%u %s", pass, kind);
+  char name[64];
+  int n = snprintf(name, sizeof(name), "pass-%u %s", pass, kind);
+  if (render) {
+    unsigned colors = 0;
+    WMT::Texture first;
+    for (auto &c : render->colors)
+      if (c.attachment && colors++ == 0)
+        first = c.attachment.texture();
+    if (!first && render->depth.attachment)
+      first = render->depth.attachment.texture();
+    n += snprintf(name + n, sizeof(name) - n, " %uc%s", colors, render->depth.attachment ? "+d" : "");
+    if (first)
+      snprintf(name + n, sizeof(name) - n, " %llux%llu", (unsigned long long)first.width(),
+               (unsigned long long)first.height());
+  }
   encoder.setLabel(WMT::String::string(name, WMTUTF8StringEncoding));
 }
 
@@ -553,6 +567,7 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
 
       if (inflight.cmdbuf.status() <= WMTCommandBufferStatusScheduled)
         inflight.cmdbuf.waitUntilCompleted();
+      DXMT_STAT_SCOPE("queue.(retire a completed command buffer)");
       if (inflight.cmdbuf.status() == WMTCommandBufferStatusError)
         ERR("Device error: ", inflight.cmdbuf.error().description().getUTF8String());
 
@@ -592,10 +607,12 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
         seq(queue->inflight_cmdbuf_seq_.load(std::memory_order_relaxed)),
         inflight(queue->inflight_cmdbuf_pool_[seq % kCommandQueueSize]),
         pool(WMT::MakeAutoreleasePool()) {
+      DXMT_STAT_SCOPE("queue.(new command buffer)");
       inflight.cmdbuf = queue->queue_.commandBuffer();
     };
 
     ~CommittingScope() {
+      DXMT_STAT_SCOPE("queue.(commit)");
       inflight.cmdbuf.commit();
       queue->inflight_cmdbuf_seq_.fetch_add(1, std::memory_order_release);
       queue->inflight_cmdbuf_seq_.notify_one();
@@ -605,7 +622,10 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
 
   CommittingScope
   StartCommitting() {
-    inflight_cmdbuf_count_.wait(kCommandQueueSize, std::memory_order_acquire);
+    {
+      DXMT_STAT_SCOPE("queue.(wait for one of 32 command buffer slots)");
+      inflight_cmdbuf_count_.wait(kCommandQueueSize, std::memory_order_acquire);
+    }
     return CommittingScope(this);
   }
 
@@ -742,6 +762,7 @@ public:
         case EncoderType::Null:
           break;
         case EncoderType::Clear: {
+          DXMT_STAT_SCOPE("queue.(encode clear)");
           auto data = static_cast<ClearEncoderData *>(current);
           {
             WMTRenderPassInfo info;
@@ -781,6 +802,7 @@ public:
           break;
         }
         case EncoderType::Render: {
+          DXMT_STAT_SCOPE("queue.(encode render)");
           auto data = static_cast<RenderEncoderData *>(current);
           WMTRenderPassInfo render_pass_info;
           WMT::InitializeRenderPassInfo(render_pass_info);
@@ -836,7 +858,7 @@ public:
           if (dumping)
             PixelHistory(cmdbuf, data, render_pass_info);
           auto encoder = cmdbuf.renderCommandEncoder(render_pass_info);
-          LabelPass(encoder, pass, "render");
+          LabelPass(encoder, pass, "render", data);
           // Geometry shader draws (MacNeutron) read resources in the object and mesh stages too.
           encoder.waitForFence(fence_, data->use_geometry ? WMTRenderStagePreRaster : WMTRenderStageVertex);
           encoder.encodeCommands(&data->cmd_head);
@@ -845,6 +867,7 @@ public:
           break;
         }
         case EncoderType::Blit: {
+          DXMT_STAT_SCOPE("queue.(encode blit)");
           auto data = static_cast<BlitEncoderData *>(current);
           WMTSampleBufferAttachmentInfo samples[4];
           for (unsigned i = 0; i < data->num_samples; i++)
@@ -859,6 +882,7 @@ public:
           break;
         }
         case EncoderType::Compute: {
+          DXMT_STAT_SCOPE("queue.(encode compute)");
           auto data = static_cast<ComputeEncoderData *>(current);
           WMTSampleBufferAttachmentInfo samples[4];
           for (unsigned i = 0; i < data->num_samples; i++)
@@ -873,6 +897,7 @@ public:
           break;
         }
         case EncoderType::Resolve: {
+          DXMT_STAT_SCOPE("queue.(encode resolve)");
           auto data = static_cast<ResolveEncoderData *>(current);
 
           WMTRenderPassInfo info;
