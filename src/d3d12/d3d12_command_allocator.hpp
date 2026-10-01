@@ -21,6 +21,7 @@
 #include "d3d12_pageable.hpp"
 #include "dxmt_command_clear.hpp"
 #include "dxmt_ring_bump_allocator.hpp"
+#include <algorithm>
 
 namespace dxmt {
 
@@ -85,7 +86,14 @@ class MTLD3D12CommandAllocatorImpl : public MTLD3D12Pageable<MTLD3D12CommandAllo
   EncoderData *encoder_last;
   EncoderData *encoder_current;
   size_t encoder_count_;
-  uint32_t barriers_ = 0; // ResourceBarrier calls recorded (DXMT_STATS: encoder boundaries with no barrier)
+  uint32_t barriers_ = 0; // this list's ResourceBarrier calls (and GPU query resolves, which order as one)
+
+  // MacNeutron: encoder ordering (GPU overlap spec §3.1-3.2), decided as each encoder closes. joins_[n]: how many of
+  // the list's first n barrier calls order all earlier work before all later work (M1: every one). group_: the
+  // list's encoders since its last join.
+  std::vector<uint32_t> joins_ = {0};
+  std::vector<EncoderData *> group_;
+  std::vector<uint32_t> deps_; // scratch
 
   small_vector<EncoderData, 64> encoder_lists_;
 
@@ -135,6 +143,7 @@ public:
   InvalidateCurrentPass() {
     if (!encoder_current)
       return;
+    Decide(encoder_current);
     encoder_last->next = encoder_current;
     encoder_last = encoder_current;
 
@@ -146,6 +155,9 @@ public:
   StartRecord(EncoderData **pStartEncoder) {
     if (encoder_last)
       return E_INVALIDARG;
+    barriers_ = 0;
+    joins_.assign(1, 0);
+    group_.clear();
     *pStartEncoder = encoder_last = &encoder_lists_.emplace_back(EncoderType::Null, nullptr);
     return S_OK;
   }
@@ -183,10 +195,68 @@ public:
   T *
   AllocatePass() {
     auto p = (new (AllocateCPUHeap(sizeof(T), alignof(T))) T());
-    p->barriers = barriers_;
+    p->barriers = p->barriers_last = barriers_;
     encoder_current = p;
     return p;
   };
+
+  // A barrier call: `join` when it orders all earlier work before all later work.
+  void
+  Barrier(bool join) {
+    barriers_++;
+    joins_.push_back(joins_.back() + join);
+  }
+
+  // MacNeutron: the current encoder writes `resource` (GPU overlap spec §3.2): a DXMT Texture or Buffer object, or a
+  // query heap's Metal results buffer. Null, or more than an encoder lists: it may write anything.
+  void
+  Writes(const void *resource) {
+    auto e = encoder_current;
+    if (!resource || e->write_count == std::size(e->writes)) {
+      e->writes_unknown = true;
+      return;
+    }
+    for (unsigned i = 0; i < e->write_count; i++)
+      if (e->writes[i] == resource)
+        return;
+    e->writes[e->write_count++] = resource;
+  }
+
+  static bool
+  Overlap(const EncoderData *a, const EncoderData *b) {
+    for (unsigned i = 0; i < a->write_count; i++)
+      for (unsigned j = 0; j < b->write_count; j++)
+        if (a->writes[i] == b->writes[j])
+          return true;
+    return false;
+  }
+
+  // What the closing encoder `e` waits on (GPU overlap spec §3.1). A join (all earlier work) when it is the list's
+  // first, may write anything, or a joining barrier came after the previous encoder began and before e's last
+  // command. Otherwise, the encoders since the list's last join that write what it writes or may write anything.
+  // ponytail: every earlier writer, not only the newest, so waits grow with same-target passes in one group; keep
+  // the newest writer per resource if dependency waits show in DXMT_STATS.
+  void
+  Decide(EncoderData *e) {
+    auto prev = encoder_last; // the list's previous encoder, or its Null head
+    e->position = encoder_count_;
+    e->join = prev->type == EncoderType::Null || e->writes_unknown || joins_[e->barriers_last] > joins_[prev->barriers];
+    if (e->join) {
+      group_.clear();
+    } else {
+      deps_.clear();
+      for (auto *g : group_)
+        if (g->writes_unknown || Overlap(g, e))
+          deps_.push_back(g->position);
+      if (!deps_.empty()) {
+        auto deps = AllocateCommandData<uint32_t>(deps_.size());
+        std::copy(deps_.begin(), deps_.end(), deps);
+        e->deps = deps;
+        e->dep_count = deps_.size();
+      }
+    }
+    group_.push_back(e);
+  }
 
   template <typename T>
   T *
@@ -209,6 +279,7 @@ public:
     encoder->pre_tail->next.set(storage);
     encoder->pre_tail = (wmtcmd_base *)storage;
     storage->next.set(nullptr);
+    encoder->barriers_last = barriers_; // a barrier recorded before this command binds the whole encoder
     return *storage;
   }
 
@@ -221,6 +292,7 @@ public:
     encoder->cmd_tail->next.set(storage);
     encoder->cmd_tail = (wmtcmd_base *)storage;
     storage->next.set(nullptr);
+    encoder->barriers_last = barriers_; // a barrier recorded before this command binds the whole encoder
     return *storage;
   }
 
@@ -233,6 +305,7 @@ public:
     encoder->cmd_tail->next.set(storage);
     encoder->cmd_tail = (wmtcmd_base *)storage;
     storage->next.set(nullptr);
+    encoder->barriers_last = barriers_; // a barrier recorded before this command binds the whole encoder
     return *storage;
   }
 
@@ -245,6 +318,7 @@ public:
     encoder->cmd_tail->next.set(storage);
     encoder->cmd_tail = (wmtcmd_base *)storage;
     storage->next.set(nullptr);
+    encoder->barriers_last = barriers_; // a barrier recorded before this command binds the whole encoder
     return *storage;
   }
 

@@ -32,6 +32,10 @@
 #include <ctime>
 #include <mutex>
 #include <atomic>
+#include <algorithm>
+#include <array>
+#include <type_traits>
+#include <vector>
 #include "d3d10_1.h"
 #include "d3d11_4.h"
 
@@ -68,59 +72,137 @@ LabelPass(Encoder &encoder, unsigned pass, const char *kind, RenderEncoderData *
   encoder.setLabel(WMT::String::string(name, WMTUTF8StringEncoding));
 }
 
-// MacNeutron: the fence wait, an encoder's commands and the fence update go to winemetal as one chained command list:
-// each call crosses from Windows code to the Metal side (several us under Rosetta), and these were three per encoder.
-// `head` null: the wait and the update alone. The chain is unlinked again, as pixel history re-encodes the commands.
-static void
-EncodeFenced(WMT::RenderCommandEncoder &encoder, obj_handle_t fence, WMTRenderStages wait_before,
-             wmtcmd_render_nop *head = nullptr, wmtcmd_base *tail = nullptr) {
-  wmtcmd_render_fence_op wait = {}, update = {};
-  wait.type = WMTRenderCommandWaitForFence;
-  wait.fence = fence;
-  wait.stages = wait_before;
-  update.type = WMTRenderCommandUpdateFence;
-  update.fence = fence;
-  update.stages = WMTRenderStageFragment;
-  wait.next.set(head ? (void *)head : (void *)&update);
-  if (tail)
-    tail->next.set(&update);
-  encoder.encodeCommands((const wmtcmd_render_nop *)&wait);
-  if (tail)
-    tail->next.set(nullptr);
-}
-
-template <typename Encoder, typename FenceOp, typename Nop, auto Wait, auto Update>
-static void
-EncodeFencedSimple(Encoder &encoder, obj_handle_t fence, Nop *head, wmtcmd_base *tail) {
-  FenceOp wait = {}, update = {};
-  wait.type = Wait;
-  wait.fence = fence;
-  update.type = Update;
-  update.fence = fence;
-  wait.next.set(head);
-  tail->next.set(&update);
-  encoder.encodeCommands((const Nop *)&wait);
-  tail->next.set(nullptr);
-}
-
-static void
-EncodeFenced(WMT::BlitCommandEncoder &encoder, obj_handle_t fence, wmtcmd_blit_nop *head, wmtcmd_base *tail) {
-  EncodeFencedSimple<WMT::BlitCommandEncoder, wmtcmd_blit_fence_op, wmtcmd_blit_nop, WMTBlitCommandWaitForFence,
-                     WMTBlitCommandUpdateFence>(encoder, fence, head, tail);
-}
-
-static void
-EncodeFenced(WMT::ComputeCommandEncoder &encoder, obj_handle_t fence, wmtcmd_compute_nop *head, wmtcmd_base *tail) {
-  EncodeFencedSimple<WMT::ComputeCommandEncoder, wmtcmd_compute_fence_op, wmtcmd_compute_nop,
-                     WMTComputeCommandWaitForFence, WMTComputeCommandUpdateFence>(encoder, fence, head, tail);
-}
-
 class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, IMTLSwapChainFactory> {
 
   D3D12_COMMAND_QUEUE_DESC desc_;
 
   WMT::Reference<WMT::CommandQueue> queue_;
-  WMT::Reference<WMT::Fence> fence_;
+  // MacNeutron: encoder ordering (GPU overlap spec §3.3). Each encoder updates a fence of its own from this ring and
+  // waits on fences of earlier encoders: a join on every encoder since the last join (frontier_), any other encoder on
+  // what that join waited on (pinned_) and on its dependencies in its command list. A fence is taken again only once
+  // no later encoder can need its last update: an encoder that would take it sooner joins first.
+  // ponytail: each encoder after a join re-waits on everything that join waited on; if wait counts show in Metal
+  // traces, wait on the join's fence instead for groups whose predecessor group is large.
+  static constexpr unsigned kFences = 256;
+  std::array<WMT::Reference<WMT::Fence>, kFences> fences_;
+  std::array<uint64_t, kFences> fence_group_ = {}; // the join group that last updated each fence
+  uint64_t group_ = 2;                             // fences of this group and the previous one are live
+  uint16_t next_fence_ = 0;
+  std::vector<uint16_t> frontier_, pinned_, waits_;
+  std::vector<uint16_t> list_fences_; // by position in the command list being encoded
+  uint32_t list_join_ = 0;            // that list's last join, by position (UINT32_MAX: the queue's own work)
+  // DXMT_D3D12_SERIAL=1: every encoder joins, the strict order DXMT used before (dumps and pixel history always do).
+  bool serial_ = env::getEnvVar("DXMT_D3D12_SERIAL") == "1";
+  std::vector<wmtcmd_render_fence_op> render_ops_;
+  std::vector<wmtcmd_blit_fence_op> blit_ops_;
+  std::vector<wmtcmd_compute_fence_op> compute_ops_;
+
+  // Takes the fence the next encoder updates and fills waits_ with the fences it waits on. `e` null: the queue's own
+  // work (pass dumps, pixel history, presents), which joins.
+  uint16_t
+  Order(const EncoderData *e, bool serial) {
+    uint16_t fence = next_fence_;
+    next_fence_ = (next_fence_ + 1) % kFences;
+    bool join = !e || e->join || serial || fence_group_[fence] + 1 >= group_;
+    waits_.clear();
+    if (join) {
+      waits_ = frontier_;
+      pinned_.swap(frontier_);
+      frontier_.clear();
+      group_++;
+      list_join_ = e ? e->position : UINT32_MAX;
+    } else {
+      waits_ = pinned_;
+      for (uint32_t i = 0; i < e->dep_count; i++)
+        if (e->deps[i] >= list_join_) // earlier ones are behind the join, so behind pinned_
+          waits_.push_back(list_fences_[e->deps[i]]);
+    }
+    if (e && g_stats_on)
+      CountOrder(e, join);
+    fence_group_[fence] = group_;
+    frontier_.push_back(fence);
+    if (e) {
+      if (e->position >= list_fences_.size())
+        list_fences_.resize(e->position + 1);
+      list_fences_[e->position] = fence;
+    }
+    return fence;
+  }
+
+  void
+  CountOrder(const EncoderData *e, bool join) { // DXMT_STATS (GPU overlap spec §3.8)
+    static const unsigned joins = StatId("#encoder full joins"), listed = StatId("#encoders with a dependency list"),
+                          dep_waits = StatId("#encoder dependency waits"),
+                          free = StatId("#encoder boundaries free to overlap");
+    if (join) {
+      StatCount(joins);
+      return;
+    }
+    size_t deps = waits_.size() - pinned_.size();
+    if (deps) {
+      StatCount(listed);
+      StatCount(dep_waits, deps);
+    }
+    if (std::find(waits_.begin(), waits_.end(), list_fences_[e->position - 1]) == waits_.end())
+      StatCount(free);
+  }
+
+  // The queue's own encoders (pass dumps, pixel history, presents) join. Returns the fence the encoder then updates.
+  template <typename Encoder, typename... Stage>
+  uint16_t
+  Join(Encoder &encoder, Stage... before) {
+    uint16_t fence = Order(nullptr, true);
+    for (auto wait : waits_)
+      encoder.waitForFence(fences_[wait], before...);
+    return fence;
+  }
+
+  // The waits in waits_, an encoder's commands and the update of `fence` go to winemetal as one chained command list:
+  // each call crosses from Windows code to the Metal side (several us under Rosetta). `head` null: the waits and the
+  // update alone. The chain is unlinked again, as pixel history re-encodes the commands. Render passes wait before
+  // `before` and update after the fragment stage.
+  template <typename FenceOp, auto Wait, auto Update, typename Encoder, typename Nop>
+  void
+  EncodeOrdered(Encoder &encoder, std::vector<FenceOp> &ops, uint16_t fence, Nop *head, wmtcmd_base *tail,
+                WMTRenderStages before = WMTRenderStageVertex) {
+    size_t n = waits_.size();
+    ops.assign(n + 1, FenceOp{});
+    for (size_t i = 0; i <= n; i++) {
+      ops[i].type = i < n ? Wait : Update;
+      ops[i].fence = fences_[i < n ? waits_[i] : fence].handle;
+      if constexpr (std::is_same_v<FenceOp, wmtcmd_render_fence_op>)
+        ops[i].stages = i < n ? before : WMTRenderStageFragment;
+      if (i + 1 < n)
+        ops[i].next.set(&ops[i + 1]);
+    }
+    void *body = head ? (void *)head : (void *)&ops[n];
+    if (n)
+      ops[n - 1].next.set(body);
+    if (tail)
+      tail->next.set(&ops[n]);
+    encoder.encodeCommands((const Nop *)(n ? (void *)ops.data() : body));
+    if (tail)
+      tail->next.set(nullptr);
+  }
+
+  void
+  Encode(WMT::RenderCommandEncoder &encoder, uint16_t fence, WMTRenderStages before,
+         wmtcmd_render_nop *head = nullptr, wmtcmd_base *tail = nullptr) {
+    EncodeOrdered<wmtcmd_render_fence_op, WMTRenderCommandWaitForFence, WMTRenderCommandUpdateFence>(
+        encoder, render_ops_, fence, head, tail, before);
+  }
+
+  void
+  Encode(WMT::BlitCommandEncoder &encoder, uint16_t fence, wmtcmd_blit_nop *head, wmtcmd_base *tail) {
+    EncodeOrdered<wmtcmd_blit_fence_op, WMTBlitCommandWaitForFence, WMTBlitCommandUpdateFence>(encoder, blit_ops_,
+                                                                                               fence, head, tail);
+  }
+
+  void
+  Encode(WMT::ComputeCommandEncoder &encoder, uint16_t fence, wmtcmd_compute_nop *head, wmtcmd_base *tail) {
+    EncodeOrdered<wmtcmd_compute_fence_op, WMTComputeCommandWaitForFence, WMTComputeCommandUpdateFence>(
+        encoder, compute_ops_, fence, head, tail);
+  }
 
   // Metal frame capture (MacNeutron; as DXMT's D3D11 queue: MTL_CAPTURE_ENABLED=1 and DXMT_CAPTURE_EXECUTABLE=<exe>,
   // then F10 or DXMT_CAPTURE_FRAME=<n>). Frames are counted by presents.
@@ -244,9 +326,9 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
     cmd.bytes_per_image = size;
     cmd.options = option;
     auto blit = cmdbuf.blitCommandEncoder();
-    blit.waitForFence(fence_);
+    auto fence = Join(blit);
     blit.encodeCommands((const wmtcmd_blit_nop *)&cmd);
-    blit.updateFence(fence_);
+    blit.updateFence(fences_[fence]);
     blit.endEncoding();
     dump.name = file + ".raw";
     d.bytes += size;
@@ -465,7 +547,7 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
     // The pixels (and the whole depth) as they are before the pass.
     {
       auto blit = cmdbuf.blitCommandEncoder();
-      blit.waitForFence(fence_);
+      auto before = Join(blit);
       for (auto &w : colors)
         for (uint32_t p = 0; p < record.points.size(); p++)
           copy(blit, w.texture.handle, w.slice, w.level, {record.points[p].first, record.points[p].second, w.plane},
@@ -473,7 +555,7 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
       if (depth_before)
         copy(blit, depth_texture.handle, depth_slice, depth_level, {0, 0, 0}, {depth_width, depth_height, 1},
              depth_before.handle, {0, 0, 0});
-      blit.updateFence(fence_);
+      blit.updateFence(fences_[before]);
       blit.endEncoding();
     }
     std::vector<uint16_t> types;
@@ -484,29 +566,29 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
     // 0: no draw (the pass's clears alone); k: draw k - 1 alone, or draws 0 to k - 1 in sequence.
     for (size_t k = 0; k <= draws.size(); k++) {
       auto blit = cmdbuf.blitCommandEncoder();
-      blit.waitForFence(fence_);
+      auto restored = Join(blit);
       for (auto &w : colors)
         for (uint32_t p = 0; p < record.points.size(); p++)
           copy(blit, w.before.handle, 0, 0, {p, 0, 0}, {1, 1, 1}, w.scratch.handle,
                {record.points[p].first, record.points[p].second, 0});
       if (depth_before)
         copy(blit, depth_before.handle, 0, 0, {0, 0, 0}, {depth_width, depth_height, 1}, depth_scratch.handle, {0, 0, 0});
-      blit.updateFence(fence_);
+      blit.updateFence(fences_[restored]);
       blit.endEncoding();
       for (size_t j = 0; j < draws.size(); j++)
         draws[j]->type = (record.seq ? j + 1 <= k : j + 1 == k) ? types[j] : (uint16_t)WMTRenderCommandNop;
       auto encoder = cmdbuf.renderCommandEncoder(info);
-      encoder.waitForFence(fence_, data->use_geometry ? WMTRenderStagePreRaster : WMTRenderStageVertex);
+      auto drawn = Join(encoder, data->use_geometry ? WMTRenderStagePreRaster : WMTRenderStageVertex);
       encoder.encodeCommands(&data->cmd_head);
-      encoder.updateFence(fence_, WMTRenderStageFragment);
+      encoder.updateFence(fences_[drawn], WMTRenderStageFragment);
       encoder.endEncoding();
       auto readback = cmdbuf.blitCommandEncoder();
-      readback.waitForFence(fence_);
+      auto copied = Join(readback);
       for (size_t p = 0; p < record.points.size(); p++)
         for (size_t i = 0; i < colors.size(); i++)
           read(readback, colors[i].scratch.handle, record.points[p].first, record.points[p].second, record.texels[i],
                k * stride + (p * colors.size() + i) * slot);
-      readback.updateFence(fence_);
+      readback.updateFence(fences_[copied]);
       readback.endEncoding();
     }
     for (size_t j = 0; j < draws.size(); j++)
@@ -709,7 +791,8 @@ public:
       return E_FAIL;
     queue_.addResidencySet(device_->GetGlobalResidencySet());
 
-    fence_ = metal_device.newFence();
+    for (auto &fence : fences_)
+      fence = metal_device.newFence();
 
     return S_OK;
   }
@@ -776,6 +859,7 @@ public:
     auto scope = StartCommitting();
     auto &cmdbuf = scope.inflight.cmdbuf;
     bool dumping = Dumps().frames == Dumps().frame;
+    bool serial = serial_ || dumping; // F9 dumps and pixel history see the strict order
     for (unsigned i = 0; i < Count; i++) {
       auto pCommandList = static_cast<MTLD3D12GraphicsCommandList *>(ppCommandLists[i]);
       if (!pCommandList->timestamp_resolves.empty()) {
@@ -841,7 +925,7 @@ public:
             info.render_target_array_length = data->array_length;
             auto encoder = cmdbuf.renderCommandEncoder(info);
             LabelPass(encoder, pass, "clear");
-            EncodeFenced(encoder, fence_.handle, WMTRenderStageFragment);
+            Encode(encoder, Order(current, serial), WMTRenderStageFragment);
             encoder.endEncoding();
           }
           break;
@@ -900,20 +984,28 @@ public:
             for (unsigned i = 0; i < data->num_samples; i++)
               render_pass_info.sample_buffers[i] = {data->samples[i].buffer, data->samples[i].index};
           }
-          if (data->pre_tail) { // ExecuteIndirect's resolvers, writing the pass's ICBs
+          auto resolve_icbs = [&](uint16_t fence) { // ExecuteIndirect's resolvers, writing the pass's ICBs
             DXMT_STAT_COUNT("#indirect resolve passes", 1);
             auto pre = cmdbuf.computeCommandEncoder(true);
             LabelPass(pre, pass, "indirect resolve");
-            EncodeFenced(pre, fence_.handle, &data->pre_head, data->pre_tail);
+            Encode(pre, fence, &data->pre_head, data->pre_tail);
             pre.endEncoding();
-          }
-          if (dumping)
+          };
+          if (dumping) { // strict order: the resolvers, the pass's pixel history, then the pass
+            if (data->pre_tail)
+              resolve_icbs(Order(nullptr, true));
             PixelHistory(cmdbuf, data, render_pass_info);
+          }
+          uint16_t fence = Order(current, serial);
+          if (data->pre_tail && !dumping) { // the resolvers wait as the pass would; the pass waits on them alone
+            resolve_icbs(fence);
+            waits_.assign(1, fence);
+          }
           auto encoder = cmdbuf.renderCommandEncoder(render_pass_info);
           LabelPass(encoder, pass, "render", data);
           // Geometry shader draws (MacNeutron) read resources in the object and mesh stages too.
-          EncodeFenced(encoder, fence_.handle, data->use_geometry ? WMTRenderStagePreRaster : WMTRenderStageVertex,
-                       &data->cmd_head, data->cmd_tail);
+          Encode(encoder, fence, data->use_geometry ? WMTRenderStagePreRaster : WMTRenderStageVertex, &data->cmd_head,
+                 data->cmd_tail);
           encoder.endEncoding();
           break;
         }
@@ -926,7 +1018,7 @@ public:
           auto encoder = data->num_samples ? cmdbuf.blitCommandEncoderWithSampleBuffers(samples, data->num_samples)
                                            : cmdbuf.blitCommandEncoder();
           LabelPass(encoder, pass, "blit");
-          EncodeFenced(encoder, fence_.handle, &data->cmd_head, data->cmd_tail);
+          Encode(encoder, Order(current, serial), &data->cmd_head, data->cmd_tail);
           encoder.endEncoding();
           break;
         }
@@ -939,7 +1031,7 @@ public:
           auto encoder = data->num_samples ? cmdbuf.computeCommandEncoderWithSampleBuffers(false, samples, data->num_samples)
                                            : cmdbuf.computeCommandEncoder(false);
           LabelPass(encoder, pass, "compute");
-          EncodeFenced(encoder, fence_.handle, &data->cmd_head, data->cmd_tail);
+          Encode(encoder, Order(current, serial), &data->cmd_head, data->cmd_tail);
           encoder.endEncoding();
           break;
         }
@@ -955,9 +1047,8 @@ public:
           info.colors[0].resolve_texture = data->dst.texture();
 
           auto encoder = cmdbuf.renderCommandEncoder(info);
-          encoder.waitForFence(fence_, WMTRenderStageFragment);
           encoder.setLabel(WMT::String::string("ResolvePass", WMTUTF8StringEncoding));
-          encoder.updateFence(fence_, WMTRenderStageFragment);
+          Encode(encoder, Order(current, serial), WMTRenderStageFragment);
           encoder.endEncoding();
 
           break;
@@ -1090,10 +1181,11 @@ public:
     auto &view = g->texture->view(g->texture->fullView);
 
     auto state = presenter->synchronizeLayerProperties();
+    uint16_t fence = 0;
     auto drawable = presenter->encodeCommands(
         cmdbuf, view.texture, state.metadata,
-        [&](auto encoder) { encoder.waitForFence(fence_, WMTRenderStageFragment); },
-        [&](auto encoder) { encoder.updateFence(fence_, WMTRenderStageFragment); }
+        [&](auto encoder) { fence = Join(encoder, WMTRenderStageFragment); },
+        [&](auto encoder) { encoder.updateFence(fences_[fence], WMTRenderStageFragment); }
     );
 
     if (after > 0)

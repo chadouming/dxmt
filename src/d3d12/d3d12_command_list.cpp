@@ -133,6 +133,17 @@ to_metal_primitive_type(D3D12_PRIMITIVE_TOPOLOGY topo, WMTPrimitiveType &primiti
   return true;
 }
 
+// A resource's identity for encoder ordering (GPU overlap spec §3.2): its DXMT texture or buffer; null if neither.
+static const void *
+ResourceKey(ID3D12Resource *resource) {
+  auto r = static_cast<MTLD3D12Resource *>(resource);
+  if (!r)
+    return nullptr;
+  if (r->texture)
+    return r->texture.ptr();
+  return r->buffer.ptr();
+}
+
 // `Graphics`CommandList is a really confusing name
 class MTLD3D12GraphicsCommandListImpl : public MTLD3D12DeviceChild<MTLD3D12GraphicsCommandList> {
 
@@ -347,6 +358,7 @@ public:
 
       allocator_->InvalidateCurrentPass();
       auto render = allocator_->AllocatePass<RenderEncoderData>();
+      render->writes_unknown = false;
       render->type = EncoderType::Render;
       render->cmd_head.type = WMTRenderCommandNop;
       render->cmd_head.next.set(0);
@@ -366,6 +378,7 @@ public:
         auto AttachmentDesc = Heap->GetRenderTarget(Index);
         if (!AttachmentDesc.Texture)
           continue;
+        allocator_->Writes(AttachmentDesc.Texture);
         auto &rt = render->colors[i];
         rt.attachment = AttachmentDesc.Texture->view(AttachmentDesc.View);
         rt.depth_plane = AttachmentDesc.DepthPlane;
@@ -381,6 +394,7 @@ public:
         auto AttachmentDesc = Heap->GetRenderTarget(Index);
         if (!AttachmentDesc.Texture)
           break; // a null depth view: no depth attachment
+        allocator_->Writes(AttachmentDesc.Texture);
         auto dsv_planar_flags = DepthStencilPlanarFlags(AttachmentDesc.Texture->pixelFormat(AttachmentDesc.View));
         if (dsv_planar_flags & 1) {
           auto &rt = render->depth;
@@ -421,8 +435,10 @@ public:
 
     if (query_dirty_) {
       auto render = static_cast<RenderEncoderData *>(allocator_->encoder_current);
-      if (query_heap_ && !render->visibility_buffer)
+      if (query_heap_ && !render->visibility_buffer) {
         render->visibility_buffer = query_heap_->results.handle;
+        allocator_->Writes((const void *)(uintptr_t)render->visibility_buffer); // the pass counts samples into it
+      }
       if (render->visibility_buffer) {
         auto &cmd = allocator_->EncodeRenderCommand<wmtcmd_render_setvisibilitymode>();
         cmd.type = WMTRenderCommandSetVisibilityMode;
@@ -678,6 +694,7 @@ public:
     if (!allocator_->encoder_current || allocator_->encoder_current->type != EncoderType::Compute) {
       allocator_->InvalidateCurrentPass();
       auto compute = allocator_->AllocatePass<ComputeEncoderData>();
+      compute->writes_unknown = false; // its UAV writes are ordered by the game's barriers
       compute->type = EncoderType::Compute;
       compute->cmd_head.type = WMTComputeCommandNop;
       compute->cmd_head.next.set(0);
@@ -735,8 +752,9 @@ public:
     cmd_dispatch.size = {X, Y, Z};
   };
 
+  // The open blit encoder, or a new one; it writes `dst` (null: nothing a D3D12 resource shows, as a timestamp's fill).
   bool
-  PreBlit() {
+  PreBlit(ID3D12Resource *dst) {
     if (!allocator_->encoder_current || allocator_->encoder_current->type != EncoderType::Blit) {
       allocator_->InvalidateCurrentPass();
       auto render = allocator_->AllocatePass<BlitEncoderData>();
@@ -744,7 +762,10 @@ public:
       render->cmd_head.type = WMTBlitCommandNop;
       render->cmd_head.next.set(0);
       render->cmd_tail = (wmtcmd_base *)&render->cmd_head;
+      render->writes_unknown = false;
     }
+    if (dst)
+      allocator_->Writes(ResourceKey(dst));
     return true;
   }
 
@@ -825,7 +846,7 @@ public:
     DXMT_STAT_SCOPE("list.CopyBufferRegion");
     if (!pDstBuffer || !pSrcBuffer)
       return;
-    if (!PreBlit())
+    if (!PreBlit(pDstBuffer))
       return;
 
     auto &cmd_cp = allocator_->EncodeBlitCommand<wmtcmd_blit_copy_from_buffer_to_buffer>();
@@ -845,7 +866,7 @@ public:
     DXMT_STAT_SCOPE("list.CopyTextureRegion");
     if (!pDst || !pSrc)
       return;
-    if (!PreBlit())
+    if (!PreBlit(pDst->pResource))
       return;
 
     auto src_desc = pSrc->pResource->GetDesc();
@@ -1060,7 +1081,7 @@ public:
     if (DstDesc.Dimension != SrcDesc.Dimension)
       return;
 
-    if (!PreBlit())
+    if (!PreBlit(pDstResource))
       return;
 
     if (DstDesc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER) {
@@ -1124,6 +1145,8 @@ public:
     allocator_->InvalidateCurrentPass();
     auto resolve = allocator_->AllocatePass<ResolveEncoderData>();
     resolve->type = EncoderType::Resolve;
+    resolve->writes_unknown = false;
+    allocator_->Writes(pDst->texture.ptr());
 
     MTL_DXGI_FORMAT_DESC format_desc;
     if (FAILED(MTLQueryDXGIFormat(device_->GetMTLDevice(), Format, format_desc))) {
@@ -1243,10 +1266,8 @@ public:
 
   void STDMETHODCALLTYPE ResourceBarrier(UINT Count, const D3D12_RESOURCE_BARRIER *barriers) {
     DXMT_STAT_SCOPE("list.ResourceBarrier");
-    allocator_->barriers_++;
     DXMT_STAT_COUNT("#resource barriers", Count);
-    // TODO: in the initial implementation, we force synchronize everything and ignore barriers (which can be used as
-    // optimization hints later)
+    allocator_->Barrier(true); // M1: every barrier orders all earlier work before all later work (GPU overlap §3.1)
   };
 
   void STDMETHODCALLTYPE ExecuteBundle(ID3D12GraphicsCommandList *CommandList) {
@@ -1503,6 +1524,8 @@ public:
     allocator_->InvalidateCurrentPass();
     auto encoder_info = allocator_->AllocatePass<ClearEncoderData>();
     encoder_info->type = EncoderType::Clear;
+    encoder_info->writes_unknown = false;
+    allocator_->Writes(AttachmentDesc.Texture);
     encoder_info->clear_dsv = CheckedFlags;
     encoder_info->depth_stencil = {Depth, Stencil};
     encoder_info->attachment = AttachmentDesc.Texture->view(AttachmentDesc.View);
@@ -1544,6 +1567,8 @@ public:
     allocator_->InvalidateCurrentPass();
     auto encoder_info = allocator_->AllocatePass<ClearEncoderData>();
     encoder_info->type = EncoderType::Clear;
+    encoder_info->writes_unknown = false;
+    allocator_->Writes(AttachmentDesc.Texture);
     encoder_info->clear_dsv = 0;
     encoder_info->color = {Color[0], Color[1], Color[2], Color[3]};
     SanitizeRTVClearColor(AttachmentDesc.Texture->pixelFormat(AttachmentDesc.View), encoder_info->color);
@@ -1702,7 +1727,7 @@ public:
           return;
         }
     if (!render && (!current || (current->type != EncoderType::Blit && current->type != EncoderType::Compute))) {
-      PreBlit();
+      PreBlit(nullptr); // a timestamp's own encoder writes nothing
       current = allocator_->encoder_current;
       // Metal drops an empty encoder, samples included: give it one real command (4 bytes of the heap's unused
       // results buffer).
@@ -1715,7 +1740,7 @@ public:
     }
     if (current->num_samples == std::size(current->samples)) { // four per encoder: an empty blit encoder takes more
       allocator_->InvalidateCurrentPass();
-      PreBlit();
+      PreBlit(nullptr); // a timestamp's own encoder writes nothing
       current = allocator_->encoder_current;
       render = false;
     }
@@ -1771,7 +1796,11 @@ public:
       return;
     }
     // ponytail: a timestamp resolve into GPU-only memory gets zeros; resolve into a readback buffer
-    PreBlit(); // only now: a CPU resolve above needs no encoder (an empty blit each, Unreal resolves ~27 a frame)
+    // Only now: a CPU resolve above needs no encoder (an empty blit each, Unreal resolves ~27 a frame). Query heaps
+    // have no barriers, so this resolve waits on all earlier work (GPU overlap spec §3.4).
+    allocator_->Barrier(true);
+    PreBlit(pDstBuffer);
+    allocator_->Writes((const void *)(uintptr_t)heap->results.handle); // it zeroes the counts it read
     auto &copy = allocator_->EncodeBlitCommand<wmtcmd_blit_copy_from_buffer_to_buffer>();
     copy.type = WMTBlitCommandCopyFromBufferToBuffer;
     copy.src = heap->results.handle;
