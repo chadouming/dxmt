@@ -19,6 +19,7 @@
 #include "d3d12_shader_cache.hpp"
 #include "dxmt_shader_cache.hpp"
 #include "log/log.hpp"
+#include "util_env.hpp"
 #include "util_string.hpp"
 #include "DXBCParser/BlobContainer.h"
 #include <atomic>
@@ -41,6 +42,14 @@ using Key = std::pair<Sha1Digest, Sha1Digest>; // the store's key, as D3D11's
 Sha1Digest
 Tag(const char *tag) {
   return Sha1HashState::compute(tag, strlen(tag));
+}
+
+// A probed run (DXMT_PROBE, frame debugging) translates pixel shaders into debug colours: it neither reads nor stores
+// functions, or a later normal run would draw with them.
+bool
+ProbeOn() {
+  static const bool on = !env::getEnvVar("DXMT_PROBE").empty();
+  return on;
 }
 
 void
@@ -167,7 +176,7 @@ CompileFunction(WMT::Device device, FunctionKind kind, CachedShader &first, Cach
                 WMT::Reference<WMT::Function> &function) {
   WMT::Reference<WMT::Error> err;
   std::optional<Key> key;
-  if (auto variant = HashCompileArgs(args)) {
+  if (auto variant = HashCompileArgs(args); variant && !ProbeOn()) {
     Sha1HashState shaders, v;
     shaders.update(first.digest());
     if (second)
