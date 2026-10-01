@@ -77,18 +77,19 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
   D3D12_COMMAND_QUEUE_DESC desc_;
 
   WMT::Reference<WMT::CommandQueue> queue_;
-  // MacNeutron: encoder ordering (GPU overlap spec §3.3). Each encoder updates a fence of its own from this ring and
-  // waits on fences of earlier encoders: a join on every encoder since the last join (frontier_), any other encoder on
-  // what that join waited on (pinned_) and on its dependencies in its command list. A fence is taken again only once
-  // no later encoder can need its last update: an encoder that would take it sooner joins first.
-  // ponytail: each encoder after a join re-waits on everything that join waited on; if wait counts show in Metal
-  // traces, wait on the join's fence instead for groups whose predecessor group is large.
+  // MacNeutron: encoder ordering (GPU overlap spec §3.3, §3.9). Each encoder updates a fence of its own from this ring
+  // and waits on fences of earlier encoders: a join on every encoder since the last join (frontier_), any other
+  // encoder on its group's fence (group_wait_: the join's early fence, updated after its first stage when it draws,
+  // else the join's own fence) and on its dependencies in its command list. A fence is taken again only once no later
+  // encoder can need its last update: an encoder that would take it sooner joins first.
   static constexpr unsigned kFences = 256;
+  static constexpr uint16_t kNoFence = 0xffff;
   std::array<WMT::Reference<WMT::Fence>, kFences> fences_;
   std::array<uint64_t, kFences> fence_group_ = {}; // the join group that last updated each fence
   uint64_t group_ = 2;                             // fences of this group and the previous one are live
   uint16_t next_fence_ = 0;
-  std::vector<uint16_t> frontier_, pinned_, waits_;
+  std::vector<uint16_t> frontier_, waits_;
+  uint16_t group_wait_ = kNoFence, early_ = kNoFence; // early_: the early fence the last Order gave its join
   std::vector<uint16_t> list_fences_; // by position in the command list being encoded
   uint32_t list_join_ = 0;            // that list's last join, by position (UINT32_MAX: the queue's own work)
   // DXMT_D3D12_SERIAL=1: every encoder joins, the strict order DXMT used before (dumps and pixel history always do).
@@ -97,24 +98,31 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
   std::vector<wmtcmd_blit_fence_op> blit_ops_;
   std::vector<wmtcmd_compute_fence_op> compute_ops_;
 
-  // Takes the fence the next encoder updates and fills waits_ with the fences it waits on. `e` null: the queue's own
-  // work (pass dumps, pixel history, presents), which joins.
+  // Takes the fence the next encoder updates and fills waits_ with the fences it waits on (and early_ with the early
+  // fence a drawing join render pass also updates). `e` null: the queue's own work (pass dumps, pixel history,
+  // presents), which joins.
   uint16_t
-  Order(const EncoderData *e, bool serial) {
+  Order(EncoderData *e, bool serial) {
     uint16_t fence = next_fence_;
     next_fence_ = (next_fence_ + 1) % kFences;
     bool join = !e || e->join || serial || fence_group_[fence] + 1 >= group_;
     waits_.clear();
+    early_ = kNoFence;
     if (join) {
       waits_ = frontier_;
-      pinned_.swap(frontier_);
       frontier_.clear();
       group_++;
       list_join_ = e ? e->position : UINT32_MAX;
+      group_wait_ = fence;
+      if (e && e->type == EncoderType::Render && Draws(static_cast<RenderEncoderData *>(e))) {
+        early_ = group_wait_ = next_fence_; // live for the group; the join's own fence covers it for the next join
+        next_fence_ = (next_fence_ + 1) % kFences;
+        fence_group_[early_] = group_;
+      }
     } else {
-      waits_ = pinned_;
+      waits_.assign(1, group_wait_);
       for (uint32_t i = 0; i < e->dep_count; i++)
-        if (e->deps[i] >= list_join_) // earlier ones are behind the join, so behind pinned_
+        if (e->deps[i] >= list_join_) // earlier ones are behind the join, so behind the group fence
           waits_.push_back(list_fences_[e->deps[i]]);
     }
     if (e && g_stats_on)
@@ -129,16 +137,46 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
     return fence;
   }
 
+  // A draw among a render pass's commands: then its first stage, after its waits, proves them met (spec §3.9).
+  static bool
+  Draws(RenderEncoderData *data) {
+    for (auto *cmd = (wmtcmd_base *)data->cmd_head.next.get(); cmd; cmd = (wmtcmd_base *)cmd->next.get())
+      switch (cmd->type) {
+      case WMTRenderCommandDraw:
+      case WMTRenderCommandDrawIndexed:
+      case WMTRenderCommandDrawIndirect:
+      case WMTRenderCommandDrawIndexedIndirect:
+      case WMTRenderCommandDrawMeshThreadgroups:
+      case WMTRenderCommandDrawMeshThreadgroupsIndirect:
+      case WMTRenderCommandDXMTGeometryDraw:
+      case WMTRenderCommandDXMTGeometryDrawIndexed:
+      case WMTRenderCommandDXMTGeometryDrawIndirect:
+      case WMTRenderCommandDXMTGeometryDrawIndexedIndirect:
+      case WMTRenderCommandDXMTTessellationMeshDraw:
+      case WMTRenderCommandDXMTTessellationMeshDrawIndexed:
+      case WMTRenderCommandDXMTTessellationMeshDrawIndirect:
+      case WMTRenderCommandDXMTTessellationMeshDrawIndexedIndirect:
+      case WMTRenderCommandDispatchThreadsPerTile:
+      case WMTRenderCommandExecuteCommandsInBuffer:
+        return true;
+      default:
+        break;
+      }
+    return false;
+  }
+
   void
   CountOrder(const EncoderData *e, bool join) { // DXMT_STATS (GPU overlap spec §3.8)
     static const unsigned joins = StatId("#encoder full joins"), listed = StatId("#encoders with a dependency list"),
                           dep_waits = StatId("#encoder dependency waits"),
+                          fence_waits = StatId("#encoder fence waits"),
                           free = StatId("#encoder boundaries free to overlap");
+    StatCount(fence_waits, waits_.size());
     if (join) {
       StatCount(joins);
       return;
     }
-    size_t deps = waits_.size() - pinned_.size();
+    size_t deps = waits_.size() - 1; // beyond the group fence
     if (deps) {
       StatCount(listed);
       StatCount(dep_waits, deps);
@@ -157,22 +195,22 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
     return fence;
   }
 
-  // The waits in waits_, an encoder's commands and the update of `fence` go to winemetal as one chained command list:
-  // each call crosses from Windows code to the Metal side (several us under Rosetta). `head` null: the waits and the
-  // update alone. The chain is unlinked again, as pixel history re-encodes the commands. Render passes wait before
-  // `before` and update after the fragment stage.
+  // The waits in waits_, an encoder's commands and the update of `fence` (and of `early`, after the `before` stages,
+  // for a render pass) go to winemetal as one chained command list: each call crosses from Windows code to the Metal
+  // side (several us under Rosetta). `head` null: the waits and the updates alone. The chain is unlinked again, as
+  // pixel history re-encodes the commands. Render passes wait before `before` and update after the fragment stage.
   template <typename FenceOp, auto Wait, auto Update, typename Encoder, typename Nop>
   void
   EncodeOrdered(Encoder &encoder, std::vector<FenceOp> &ops, uint16_t fence, Nop *head, wmtcmd_base *tail,
-                WMTRenderStages before = WMTRenderStageVertex) {
-    size_t n = waits_.size();
-    ops.assign(n + 1, FenceOp{});
-    for (size_t i = 0; i <= n; i++) {
+                WMTRenderStages before = WMTRenderStageVertex, uint16_t early = kNoFence) {
+    size_t n = waits_.size(), all = n + (early == kNoFence ? 1 : 2);
+    ops.assign(all, FenceOp{});
+    for (size_t i = 0; i < all; i++) {
       ops[i].type = i < n ? Wait : Update;
-      ops[i].fence = fences_[i < n ? waits_[i] : fence].handle;
+      ops[i].fence = fences_[i < n ? waits_[i] : i == n ? fence : early].handle;
       if constexpr (std::is_same_v<FenceOp, wmtcmd_render_fence_op>)
-        ops[i].stages = i < n ? before : WMTRenderStageFragment;
-      if (i + 1 < n)
+        ops[i].stages = i == n ? WMTRenderStageFragment : before;
+      if (i + 1 < all && i + 1 != n)
         ops[i].next.set(&ops[i + 1]);
     }
     void *body = head ? (void *)head : (void *)&ops[n];
@@ -187,9 +225,9 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
 
   void
   Encode(WMT::RenderCommandEncoder &encoder, uint16_t fence, WMTRenderStages before,
-         wmtcmd_render_nop *head = nullptr, wmtcmd_base *tail = nullptr) {
+         wmtcmd_render_nop *head = nullptr, wmtcmd_base *tail = nullptr, uint16_t early = kNoFence) {
     EncodeOrdered<wmtcmd_render_fence_op, WMTRenderCommandWaitForFence, WMTRenderCommandUpdateFence>(
-        encoder, render_ops_, fence, head, tail, before);
+        encoder, render_ops_, fence, head, tail, before, early);
   }
 
   void
@@ -996,7 +1034,7 @@ public:
               resolve_icbs(Order(nullptr, true));
             PixelHistory(cmdbuf, data, render_pass_info);
           }
-          uint16_t fence = Order(current, serial);
+          uint16_t fence = Order(current, serial), early = early_;
           if (data->pre_tail && !dumping) { // the resolvers wait as the pass would; the pass waits on them alone
             resolve_icbs(fence);
             waits_.assign(1, fence);
@@ -1005,7 +1043,7 @@ public:
           LabelPass(encoder, pass, "render", data);
           // Geometry shader draws (MacNeutron) read resources in the object and mesh stages too.
           Encode(encoder, fence, data->use_geometry ? WMTRenderStagePreRaster : WMTRenderStageVertex, &data->cmd_head,
-                 data->cmd_tail);
+                 data->cmd_tail, early);
           encoder.endEncoding();
           break;
         }

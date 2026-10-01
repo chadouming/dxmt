@@ -93,7 +93,8 @@ class MTLD3D12CommandAllocatorImpl : public MTLD3D12Pageable<MTLD3D12CommandAllo
   // list's encoders since its last join.
   std::vector<uint32_t> joins_ = {0};
   std::vector<EncoderData *> group_;
-  std::vector<uint32_t> deps_; // scratch
+  std::vector<uint32_t> deps_;         // scratch
+  std::vector<const void *> covered_; // scratch: resources whose older writers a dependency already covers
   // M2: resources leaving a write state, with the barrier call (1-based) that moved them, since the list's last join.
   std::vector<std::pair<const void *, uint32_t>> transitions_;
 
@@ -214,14 +215,20 @@ public:
         transitions_.push_back({transitioned[i], barriers_});
   }
 
-  // M2: a resource `g` writes left its write state after g began and before e's last command.
+  static bool
+  Lists(const EncoderData *e, const void *resource) {
+    for (unsigned i = 0; i < e->write_count; i++)
+      if (e->writes[i] == resource)
+        return true;
+    return false;
+  }
+
+  // M2: `resource`, which g writes, left its write state after g began and before e's last command.
   bool
-  Transitioned(const EncoderData *g, const EncoderData *e) {
-    for (auto &[resource, at] : transitions_)
-      if (at > g->barriers && at <= e->barriers_last)
-        for (unsigned i = 0; i < g->write_count; i++)
-          if (g->writes[i] == resource)
-            return true;
+  Transitioned(const EncoderData *g, const EncoderData *e, const void *resource) {
+    for (auto &[r, at] : transitions_)
+      if (r == resource && at > g->barriers && at <= e->barriers_last)
+        return true;
     return false;
   }
 
@@ -240,21 +247,11 @@ public:
     e->writes[e->write_count++] = resource;
   }
 
-  static bool
-  Overlap(const EncoderData *a, const EncoderData *b) {
-    for (unsigned i = 0; i < a->write_count; i++)
-      for (unsigned j = 0; j < b->write_count; j++)
-        if (a->writes[i] == b->writes[j])
-          return true;
-    return false;
-  }
 
   // What the closing encoder `e` waits on (GPU overlap spec §3.1). A join (all earlier work) when it is the list's
   // first, may write anything, or a joining barrier came after the previous encoder began and before e's last
-  // command. Otherwise, the encoders since the list's last join that write what it writes, may write anything, or
-  // wrote a resource a barrier since moved out of its write state.
-  // ponytail: every earlier writer, not only the newest, so waits grow with same-target passes in one group; keep
-  // the newest writer per resource if dependency waits show in DXMT_STATS.
+  // command. Otherwise, of the encoders since the list's last join, the newest that writes each resource it writes
+  // or that a barrier since moved out of its write state, and any that may write anything.
   void
   Decide(EncoderData *e) {
     auto prev = encoder_last; // the list's previous encoder, or its Null head
@@ -267,10 +264,23 @@ public:
                                         [&](auto &t) { return t.second <= e->barriers; }),
                          transitions_.end());
     } else {
+      // Newest first, the newest writer of each resource only: an encoder taken has itself waited on the older
+      // writers of everything it writes (GPU overlap spec §3.9).
       deps_.clear();
-      for (auto *g : group_)
-        if (g->writes_unknown || Overlap(g, e) || Transitioned(g, e))
-          deps_.push_back(g->position);
+      covered_.clear();
+      for (auto it = group_.rbegin(); it != group_.rend(); ++it) {
+        auto *g = *it;
+        bool needed = g->writes_unknown;
+        for (unsigned i = 0; i < g->write_count && !needed; i++) {
+          auto r = g->writes[i];
+          needed = std::find(covered_.begin(), covered_.end(), r) == covered_.end() &&
+                   (Lists(e, r) || Transitioned(g, e, r));
+        }
+        if (!needed)
+          continue;
+        deps_.push_back(g->position);
+        covered_.insert(covered_.end(), g->writes, g->writes + g->write_count);
+      }
       if (!deps_.empty()) {
         auto deps = AllocateCommandData<uint32_t>(deps_.size());
         std::copy(deps_.begin(), deps_.end(), deps);
