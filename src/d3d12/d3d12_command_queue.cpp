@@ -68,6 +68,53 @@ LabelPass(Encoder &encoder, unsigned pass, const char *kind, RenderEncoderData *
   encoder.setLabel(WMT::String::string(name, WMTUTF8StringEncoding));
 }
 
+// MacNeutron: the fence wait, an encoder's commands and the fence update go to winemetal as one chained command list:
+// each call crosses from Windows code to the Metal side (several us under Rosetta), and these were three per encoder.
+// `head` null: the wait and the update alone. The chain is unlinked again, as pixel history re-encodes the commands.
+static void
+EncodeFenced(WMT::RenderCommandEncoder &encoder, obj_handle_t fence, WMTRenderStages wait_before,
+             wmtcmd_render_nop *head = nullptr, wmtcmd_base *tail = nullptr) {
+  wmtcmd_render_fence_op wait = {}, update = {};
+  wait.type = WMTRenderCommandWaitForFence;
+  wait.fence = fence;
+  wait.stages = wait_before;
+  update.type = WMTRenderCommandUpdateFence;
+  update.fence = fence;
+  update.stages = WMTRenderStageFragment;
+  wait.next.set(head ? (void *)head : (void *)&update);
+  if (tail)
+    tail->next.set(&update);
+  encoder.encodeCommands((const wmtcmd_render_nop *)&wait);
+  if (tail)
+    tail->next.set(nullptr);
+}
+
+template <typename Encoder, typename FenceOp, typename Nop, auto Wait, auto Update>
+static void
+EncodeFencedSimple(Encoder &encoder, obj_handle_t fence, Nop *head, wmtcmd_base *tail) {
+  FenceOp wait = {}, update = {};
+  wait.type = Wait;
+  wait.fence = fence;
+  update.type = Update;
+  update.fence = fence;
+  wait.next.set(head);
+  tail->next.set(&update);
+  encoder.encodeCommands((const Nop *)&wait);
+  tail->next.set(nullptr);
+}
+
+static void
+EncodeFenced(WMT::BlitCommandEncoder &encoder, obj_handle_t fence, wmtcmd_blit_nop *head, wmtcmd_base *tail) {
+  EncodeFencedSimple<WMT::BlitCommandEncoder, wmtcmd_blit_fence_op, wmtcmd_blit_nop, WMTBlitCommandWaitForFence,
+                     WMTBlitCommandUpdateFence>(encoder, fence, head, tail);
+}
+
+static void
+EncodeFenced(WMT::ComputeCommandEncoder &encoder, obj_handle_t fence, wmtcmd_compute_nop *head, wmtcmd_base *tail) {
+  EncodeFencedSimple<WMT::ComputeCommandEncoder, wmtcmd_compute_fence_op, wmtcmd_compute_nop,
+                     WMTComputeCommandWaitForFence, WMTComputeCommandUpdateFence>(encoder, fence, head, tail);
+}
+
 class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, IMTLSwapChainFactory> {
 
   D3D12_COMMAND_QUEUE_DESC desc_;
@@ -794,9 +841,7 @@ public:
             info.render_target_array_length = data->array_length;
             auto encoder = cmdbuf.renderCommandEncoder(info);
             LabelPass(encoder, pass, "clear");
-            encoder.setLabel(WMT::String::string("ClearPass", WMTUTF8StringEncoding));
-            encoder.waitForFence(fence_, WMTRenderStageFragment);
-            encoder.updateFence(fence_, WMTRenderStageFragment);
+            EncodeFenced(encoder, fence_.handle, WMTRenderStageFragment);
             encoder.endEncoding();
           }
           break;
@@ -859,9 +904,7 @@ public:
             DXMT_STAT_COUNT("#indirect resolve passes", 1);
             auto pre = cmdbuf.computeCommandEncoder(true);
             LabelPass(pre, pass, "indirect resolve");
-            pre.waitForFence(fence_);
-            pre.encodeCommands(&data->pre_head);
-            pre.updateFence(fence_);
+            EncodeFenced(pre, fence_.handle, &data->pre_head, data->pre_tail);
             pre.endEncoding();
           }
           if (dumping)
@@ -869,9 +912,8 @@ public:
           auto encoder = cmdbuf.renderCommandEncoder(render_pass_info);
           LabelPass(encoder, pass, "render", data);
           // Geometry shader draws (MacNeutron) read resources in the object and mesh stages too.
-          encoder.waitForFence(fence_, data->use_geometry ? WMTRenderStagePreRaster : WMTRenderStageVertex);
-          encoder.encodeCommands(&data->cmd_head);
-          encoder.updateFence(fence_, WMTRenderStageFragment);
+          EncodeFenced(encoder, fence_.handle, data->use_geometry ? WMTRenderStagePreRaster : WMTRenderStageVertex,
+                       &data->cmd_head, data->cmd_tail);
           encoder.endEncoding();
           break;
         }
@@ -884,9 +926,7 @@ public:
           auto encoder = data->num_samples ? cmdbuf.blitCommandEncoderWithSampleBuffers(samples, data->num_samples)
                                            : cmdbuf.blitCommandEncoder();
           LabelPass(encoder, pass, "blit");
-          encoder.waitForFence(fence_);
-          encoder.encodeCommands(&data->cmd_head);
-          encoder.updateFence(fence_);
+          EncodeFenced(encoder, fence_.handle, &data->cmd_head, data->cmd_tail);
           encoder.endEncoding();
           break;
         }
@@ -899,9 +939,7 @@ public:
           auto encoder = data->num_samples ? cmdbuf.computeCommandEncoderWithSampleBuffers(false, samples, data->num_samples)
                                            : cmdbuf.computeCommandEncoder(false);
           LabelPass(encoder, pass, "compute");
-          encoder.waitForFence(fence_);
-          encoder.encodeCommands(&data->cmd_head);
-          encoder.updateFence(fence_);
+          EncodeFenced(encoder, fence_.handle, &data->cmd_head, data->cmd_tail);
           encoder.endEncoding();
           break;
         }

@@ -1741,7 +1741,7 @@ public:
       UINT64 AlignedDstBufferOffset
   ) {
     DXMT_STAT_SCOPE("list.ResolveQueryData");
-    if (!pHeap || !pDstBuffer || !QueryCount || !PreBlit())
+    if (!pHeap || !pDstBuffer || !QueryCount)
       return;
     auto heap = static_cast<MTLD3D12QueryHeap *>(pHeap);
     // Timestamps reach readback (or CPU-readable custom) heaps only: a CPU write into another heap would land after the
@@ -1771,6 +1771,7 @@ public:
       return;
     }
     // ponytail: a timestamp resolve into GPU-only memory gets zeros; resolve into a readback buffer
+    PreBlit(); // only now: a CPU resolve above needs no encoder (an empty blit each, Unreal resolves ~27 a frame)
     auto &copy = allocator_->EncodeBlitCommand<wmtcmd_blit_copy_from_buffer_to_buffer>();
     copy.type = WMTBlitCommandCopyFromBufferToBuffer;
     copy.src = heap->results.handle;
