@@ -111,6 +111,9 @@ struct RenderEncoderData : EncoderData {
   obj_handle_t visibility_buffer = 0; // MacNeutron: the occlusion query heap this pass counts samples into
   bool use_tessellation = 0;
   bool use_geometry = 0;
+  // MacNeutron: compute commands run just before this pass (ExecuteIndirect's resolvers writing its ICBs).
+  wmtcmd_compute_nop pre_head;
+  wmtcmd_base *pre_tail = nullptr;
 };
 
 struct BlitEncoderData : EncoderData {

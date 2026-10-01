@@ -89,7 +89,16 @@ class MTLD3D12CommandAllocatorImpl : public MTLD3D12Pageable<MTLD3D12CommandAllo
 
   small_vector<EncoderData, 64> encoder_lists_;
 
-  small_vector<WMT::Reference<WMT::IndirectCommandBuffer>, 4> icb_;
+  // MacNeutron: ExecuteIndirect's command buffers, kept by kind and capacity and reused once Reset says the GPU is
+  // done with them (creating and releasing one per call cost ~25 us each under Rosetta).
+  struct PooledICB {
+    uint64_t key;
+    WMT::Reference<WMT::IndirectCommandBuffer> icb;
+    uint64_t resource_id;
+  };
+  std::vector<PooledICB> icb_;
+  std::unordered_map<uint64_t, std::vector<PooledICB>> icb_free_; // by key; no allocation once warm
+  PooledICB &AcquireICB(WMTIndirectCommandBufferInfo &info, size_t MaxCount, WMTResourceOptions storage);
 
   ClearUAV<MTLD3D12CommandAllocatorImpl> clear_uav_;
   ClearRTV<MTLD3D12CommandAllocatorImpl> clear_rtv_;
@@ -184,6 +193,24 @@ public:
   AllocateCommandData(size_t Count) {
     return (T *)AllocateCPUHeap(sizeof(T) * Count, alignof(T));
   };
+
+  // MacNeutron: compute work the queue runs just before the current render pass (ExecuteIndirect's resolvers).
+  template <typename cmd_struct>
+  cmd_struct &
+  EncodeRenderPreCommand() {
+    assert(encoder_current->type == EncoderType::Render);
+    auto encoder = static_cast<RenderEncoderData *>(encoder_current);
+    if (!encoder->pre_tail) {
+      encoder->pre_head.type = WMTComputeCommandNop;
+      encoder->pre_head.next.set(nullptr);
+      encoder->pre_tail = (wmtcmd_base *)&encoder->pre_head;
+    }
+    auto storage = (cmd_struct *)AllocateCPUHeap(sizeof(cmd_struct), 16);
+    encoder->pre_tail->next.set(storage);
+    encoder->pre_tail = (wmtcmd_base *)storage;
+    storage->next.set(nullptr);
+    return *storage;
+  }
 
   template <typename cmd_struct>
   cmd_struct &

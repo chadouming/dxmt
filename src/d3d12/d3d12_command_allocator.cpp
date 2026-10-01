@@ -81,6 +81,8 @@ MTLD3D12CommandAllocatorImpl::Initialize() {
   encoder_last = nullptr;
   encoder_count_ = 0;
 
+  for (auto &pooled : icb_)
+    icb_free_[pooled.key].push_back(std::move(pooled));
   icb_.clear();
 
   copy_temp_allocator_.free_blocks(copy_temp_version_++);
@@ -150,6 +152,25 @@ MTLD3D12CommandAllocatorImpl::Reset() {
   return Initialize();
 };
 
+MTLD3D12CommandAllocatorImpl::PooledICB &
+MTLD3D12CommandAllocatorImpl::AcquireICB(WMTIndirectCommandBufferInfo &info, size_t MaxCount, WMTResourceOptions storage) {
+  uint64_t capacity = 1;
+  while (capacity < MaxCount)
+    capacity <<= 1;
+  // The descriptor's other fields are fixed per command type (compute: shared storage; draws: private).
+  uint64_t key = capacity | uint64_t(info.type) << 40 | uint64_t(info.inherit_buffers) << 48;
+  auto &free = icb_free_[key];
+  if (!free.empty()) {
+    icb_.push_back(std::move(free.back()));
+    free.pop_back();
+  } else {
+    auto icb = device_->GetMTLDevice().newIndirectCommandBuffer(info, capacity, storage);
+    DXMT_STAT_COUNT("#indirect command buffers created", 1);
+    icb_.push_back({key, std::move(icb), info.gpu_resource_id});
+  }
+  return icb_.back();
+}
+
 IndirectComputeCommandData *
 MTLD3D12CommandAllocatorImpl::EncodeIndirectComputeCommand(MTLD3D12CommandSignature *pCmdSig, MTLD3D12ComputePipelineState *pPSO, size_t MaxCount) {
   WMTIndirectCommandBufferInfo info;
@@ -174,14 +195,14 @@ MTLD3D12CommandAllocatorImpl::EncodeIndirectComputeCommand(MTLD3D12CommandSignat
   info.max_object_threadgroup_memory_binding = 0;
   info.gpu_resource_id = 0;
 
-  auto icb = device_->GetMTLDevice().newIndirectCommandBuffer(info, MaxCount, WMTResourceStorageModeShared);
-  DXMT_STAT_COUNT("#indirect command buffers created", 1);
+  auto &pooled = AcquireICB(info, MaxCount, WMTResourceStorageModeShared);
+  WMT::IndirectCommandBuffer icb = pooled.icb;
 
   auto [Ptr, Offset] = AllocateGPUHeap(sizeof(IndirectComputeCommandData), 16);
 
   auto data = reinterpret_cast<IndirectComputeCommandData *>(Ptr);
 
-  data->cmd_buf = info.gpu_resource_id;
+  data->cmd_buf = pooled.resource_id;
   data->max_count = MaxCount;
   data->tgsize_x = pPSO->threadgroup_size.width;
   data->tgsize_y = pPSO->threadgroup_size.height;
@@ -233,7 +254,6 @@ MTLD3D12CommandAllocatorImpl::EncodeIndirectComputeCommand(MTLD3D12CommandSignat
   cmd.location = 0;
   cmd.length = MaxCount;
 
-  icb_.push_back(std::move(icb));
 
   return data;
 }
@@ -265,14 +285,14 @@ MTLD3D12CommandAllocatorImpl::EncodeIndirectRenderCommand(
   info.max_object_threadgroup_memory_binding = 0;
   info.gpu_resource_id = 0;
 
-  auto icb = device_->GetMTLDevice().newIndirectCommandBuffer(info, MaxCount, WMTResourceStorageModePrivate);
-  DXMT_STAT_COUNT("#indirect command buffers created", 1);
+  auto &pooled = AcquireICB(info, MaxCount, WMTResourceStorageModePrivate);
+  WMT::IndirectCommandBuffer icb = pooled.icb;
 
   auto [Ptr, Offset] = AllocateGPUHeap(sizeof(IndirectRenderCommandData), 16);
 
   auto data = reinterpret_cast<IndirectRenderCommandData *>(Ptr);
 
-  data->cmd_buf = info.gpu_resource_id;
+  data->cmd_buf = pooled.resource_id;
   data->max_count = MaxCount;
 
   {
@@ -290,45 +310,34 @@ MTLD3D12CommandAllocatorImpl::EncodeIndirectRenderCommand(
   }
 
   {
-    /**
-     * TODO: move these out?
-     */
+    // MacNeutron: the resolver kernel writes the ICB in a compute pass the queue runs just before this render pass,
+    // fenced once for all of the pass's ICBs. Written in the pass, each ICB could run before its resolver had written
+    // it (Unreal's grass and particles flickered), and a barrier per ICB stalled the pass's vertex work.
+    auto &cmd_use_written = EncodeRenderPreCommand<wmtcmd_compute_useresource>();
+    cmd_use_written.type = WMTComputeCommandUseResource;
+    cmd_use_written.usage = WMTResourceUsageWrite;
+    cmd_use_written.resource = icb;
 
-    auto &cmd_use_icb = EncodeRenderCommand<wmtcmd_render_useresource>();
-    cmd_use_icb.type = WMTRenderCommandUseResource;
-    cmd_use_icb.stages = WMTRenderStageVertex;
-    cmd_use_icb.usage = WMTResourceUsageRead | WMTResourceUsageWrite;
-    cmd_use_icb.resource = icb;
-
-    auto &cmd_setpso_res = EncodeRenderCommand<wmtcmd_render_setpso>();
-    cmd_setpso_res.type = WMTRenderCommandSetPSO;
+    auto &cmd_setpso_res = EncodeRenderPreCommand<wmtcmd_compute_setpso>();
+    cmd_setpso_res.type = WMTComputeCommandSetPSO;
     cmd_setpso_res.pso = pCmdSig->render_resolver;
+    cmd_setpso_res.threadgroup_size = {1, 1, 1};
 
-    auto &cmd_argbuf_res = EncodeRenderCommand<wmtcmd_render_setbuffer>();
-    cmd_argbuf_res.type = WMTRenderCommandSetVertexBuffer;
+    auto &cmd_argbuf_res = EncodeRenderPreCommand<wmtcmd_compute_setbuffer>();
+    cmd_argbuf_res.type = WMTComputeCommandSetBuffer;
     cmd_argbuf_res.buffer = gpu_heap_buffer_;
     cmd_argbuf_res.offset = Offset;
     cmd_argbuf_res.index = 30;
 
-    auto &cmd_draw_res = EncodeRenderCommand<wmtcmd_render_draw>();
-    cmd_draw_res.type = WMTRenderCommandDraw;
-    cmd_draw_res.primitive_type = WMTPrimitiveTypePoint;
-    cmd_draw_res.vertex_start = 0;
-    cmd_draw_res.vertex_count = 1;
-    cmd_draw_res.base_instance = 0;
-    cmd_draw_res.instance_count = 1;
+    auto &cmd_dispatch_res = EncodeRenderPreCommand<wmtcmd_compute_dispatch>();
+    cmd_dispatch_res.type = WMTComputeCommandDispatch;
+    cmd_dispatch_res.size = {1, 1, 1};
 
-    auto &cmd_setpso = EncodeRenderCommand<wmtcmd_render_setpso>();
-    cmd_setpso.type = WMTRenderCommandSetPSO;
-    cmd_setpso.pso = pPSO->pso;
-
-    // MacNeutron: the resolver's vertex function writes the ICB; without a barrier the ICB can run before it has
-    // (draws lost or half written: Unreal's grass and particles flickered).
-    auto &cmd_barrier = EncodeRenderCommand<wmtcmd_render_memory_barrier>();
-    cmd_barrier.type = WMTRenderCommandMemoryBarrier;
-    cmd_barrier.scope = WMTBarrierScopeBuffers;
-    cmd_barrier.stages_after = WMTRenderStageVertex;
-    cmd_barrier.stages_before = WMTRenderStageVertex | WMTRenderStageFragment;
+    auto &cmd_use_icb = EncodeRenderCommand<wmtcmd_render_useresource>();
+    cmd_use_icb.type = WMTRenderCommandUseResource;
+    cmd_use_icb.stages = WMTRenderStageVertex;
+    cmd_use_icb.usage = WMTResourceUsageRead;
+    cmd_use_icb.resource = icb;
   }
 
   auto &cmd = EncodeRenderCommand<wmtcmd_render_executecommands>();
@@ -337,7 +346,6 @@ MTLD3D12CommandAllocatorImpl::EncodeIndirectRenderCommand(
   cmd.location = 0;
   cmd.length = MaxCount;
 
-  icb_.push_back(std::move(icb));
 
   return data;
 }

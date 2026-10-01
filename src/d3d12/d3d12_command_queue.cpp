@@ -855,6 +855,15 @@ public:
             for (unsigned i = 0; i < data->num_samples; i++)
               render_pass_info.sample_buffers[i] = {data->samples[i].buffer, data->samples[i].index};
           }
+          if (data->pre_tail) { // ExecuteIndirect's resolvers, writing the pass's ICBs
+            DXMT_STAT_COUNT("#indirect resolve passes", 1);
+            auto pre = cmdbuf.computeCommandEncoder(true);
+            LabelPass(pre, pass, "indirect resolve");
+            pre.waitForFence(fence_);
+            pre.encodeCommands(&data->pre_head);
+            pre.updateFence(fence_);
+            pre.endEncoding();
+          }
           if (dumping)
             PixelHistory(cmdbuf, data, render_pass_info);
           auto encoder = cmdbuf.renderCommandEncoder(render_pass_info);
