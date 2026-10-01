@@ -92,8 +92,10 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
   uint16_t group_wait_ = kNoFence, early_ = kNoFence; // early_: the early fence the last Order gave its join
   std::vector<uint16_t> list_fences_; // by position in the command list being encoded
   uint32_t list_join_ = 0;            // that list's last join, by position (UINT32_MAX: the queue's own work)
-  // DXMT_D3D12_SERIAL=1: every encoder joins, the strict order DXMT used before (dumps and pixel history always do).
-  bool serial_ = env::getEnvVar("DXMT_D3D12_SERIAL") == "1";
+  // Strict order, every encoder a join, unless DXMT_D3D12_OVERLAP=1: on Apple GPUs overlap added more idle between
+  // encoders than it saved (docs/testing/acceptance-dxmt-gpu-overlap.md, MacNeutron). Dumps and pixel history are
+  // always strict; DXMT_D3D12_SERIAL=1 still forces it.
+  bool serial_ = env::getEnvVar("DXMT_D3D12_OVERLAP") != "1" || env::getEnvVar("DXMT_D3D12_SERIAL") == "1";
   std::vector<wmtcmd_render_fence_op> render_ops_;
   std::vector<wmtcmd_blit_fence_op> blit_ops_;
   std::vector<wmtcmd_compute_fence_op> compute_ops_;
