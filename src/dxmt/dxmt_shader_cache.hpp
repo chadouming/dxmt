@@ -5,7 +5,9 @@
 
 namespace dxmt {
 
-constexpr int kDXMTShaderCacheVersion = AIRCONV_VERSION;
+// The cache table's version: airconv's and the fork build's (`git describe`), so a DXMT update never reads another
+// build's translations. (MacNeutron)
+uint64_t ShaderCacheVersion();
 
 class ShaderCache {
 public:

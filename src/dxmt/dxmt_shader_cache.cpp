@@ -1,8 +1,19 @@
 #include "dxmt_shader_cache.hpp"
 #include "util_env.hpp"
 #include "util_string.hpp"
+#include <version.h>
 
 namespace dxmt {
+
+uint64_t
+ShaderCacheVersion() {
+  uint64_t hash = 0xcbf29ce484222325ull; // FNV-1a
+  for (const char *p = DXMT_VERSION; *p; p++)
+    hash = (hash ^ (uint8_t)*p) * 0x100000001b3ull;
+  for (int i = 0; i < 4; i++)
+    hash = (hash ^ (uint8_t)((uint32_t)AIRCONV_VERSION >> (8 * i))) * 0x100000001b3ull;
+  return hash;
+}
 
 ShaderCache &
 ShaderCache::getInstance(WMTMetalVersion version) {
@@ -29,8 +40,8 @@ ShaderCache::ShaderCache(WMTMetalVersion metal_version) {
     path = str::format("dxmt/", env::getExeName(), "/");
   }
   path += str::format("shaders_", (unsigned int)metal_version, ".db");
-  scache_writer_ = WMT::CacheWriter::alloc_init(path.c_str(), kDXMTShaderCacheVersion);
-  scache_reader_ = WMT::CacheReader::alloc_init(path.c_str(), kDXMTShaderCacheVersion);
+  scache_writer_ = WMT::CacheWriter::alloc_init(path.c_str(), ShaderCacheVersion());
+  scache_reader_ = WMT::CacheReader::alloc_init(path.c_str(), ShaderCacheVersion());
 }
 
 } // namespace dxmt

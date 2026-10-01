@@ -140,6 +140,25 @@ resolve_cache_dir(NSString *path, bool path_is_file) {
       sqlite3_free(errMsg);
     }
 
+    // MacNeutron: drop the tables other builds left (ShaderCacheVersion), then give their space back.
+    @autoreleasepool {
+      NSMutableArray<NSString *> *stale = [NSMutableArray array];
+      sqlite3_stmt *list = NULL;
+      if (sqlite3_prepare_v2(_db, "SELECT name FROM sqlite_master WHERE type = 'table' AND name GLOB 'cache_*';", -1,
+                             &list, NULL) == SQLITE_OK) {
+        while (sqlite3_step(list) == SQLITE_ROW) {
+          NSString *name = [NSString stringWithUTF8String:(const char *)sqlite3_column_text(list, 0)];
+          if (![name isEqualToString:tableName])
+            [stale addObject:name];
+        }
+        sqlite3_finalize(list);
+      }
+      for (NSString *name in stale)
+        sqlite3_exec(_db, [NSString stringWithFormat:@"DROP TABLE \"%@\";", name].UTF8String, NULL, NULL, NULL);
+      if (stale.count)
+        sqlite3_exec(_db, "VACUUM;", NULL, NULL, NULL);
+    }
+
     flock(fd, LOCK_UN);
     close(fd);
 
