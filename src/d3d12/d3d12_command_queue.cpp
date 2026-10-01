@@ -187,6 +187,7 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
            a->visibility_buffer == b->visibility_buffer && a->use_geometry == b->use_geometry;
   }
 
+  bool merge_ = env::getEnvVar("DXMT_D3D12_MERGE") != "0"; // M3 on, unless DXMT_D3D12_MERGE=0 (triage)
   std::vector<EncoderData *> merged_, folds_;               // PlanMerge's result and scratch
   std::vector<std::pair<EncoderData *, uint16_t>> skipped_; // encoders M3 already encoded, with their fence
   size_t skip_ = 0;
@@ -1155,7 +1156,7 @@ public:
             for (unsigned i = 0; i < data->num_samples; i++)
               render_pass_info.sample_buffers[i] = {data->samples[i].buffer, data->samples[i].index};
           }
-          if (!dumping) // M3: also in strict order, the default; dumps keep D3D12's passes
+          if (!dumping && merge_) // M3: also in strict order, the default; dumps keep D3D12's passes
             PlanMerge(data, i, ppCommandLists, Count, render_pass_info);
           else
             merged_.clear();
