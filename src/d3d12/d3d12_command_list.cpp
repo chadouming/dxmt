@@ -144,10 +144,31 @@ ResourceKey(ID3D12Resource *resource) {
   return r->buffer.ptr();
 }
 
+// A read state, or several (GENERIC_READ): what a transition between two of them orders is nothing.
+static bool
+ReadOnly(D3D12_RESOURCE_STATES state) {
+  const unsigned reads = (unsigned)D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER |
+                         (unsigned)D3D12_RESOURCE_STATE_INDEX_BUFFER | (unsigned)D3D12_RESOURCE_STATE_DEPTH_READ |
+                         (unsigned)D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE |
+                         (unsigned)D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+                         (unsigned)D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT | (unsigned)D3D12_RESOURCE_STATE_COPY_SOURCE |
+                         (unsigned)D3D12_RESOURCE_STATE_RESOLVE_SOURCE |
+                         (unsigned)D3D12_RESOURCE_STATE_SHADING_RATE_SOURCE;
+  return state && !((unsigned)state & ~reads);
+}
+
+// A write state whose writers encoders list (GPU overlap spec §3.2): leaving it waits on them alone.
+static bool
+WriteEnds(D3D12_RESOURCE_STATES state) {
+  return state == D3D12_RESOURCE_STATE_RENDER_TARGET || state == D3D12_RESOURCE_STATE_DEPTH_WRITE ||
+         state == D3D12_RESOURCE_STATE_COPY_DEST || state == D3D12_RESOURCE_STATE_RESOLVE_DEST;
+}
+
 // `Graphics`CommandList is a really confusing name
 class MTLD3D12GraphicsCommandListImpl : public MTLD3D12DeviceChild<MTLD3D12GraphicsCommandList> {
 
   Com<MTLD3D12CommandAllocatorImpl, false> allocator_;
+  std::vector<const void *> transitioned_; // ResourceBarrier's scratch
 
   /* state */
 
@@ -1264,10 +1285,37 @@ public:
     dirty_state_.set(DirtyState::GraphicsPipelineState, DirtyState::ComputePipelineState, DirtyState::VertexBuffer);
   };
 
+  // GPU overlap spec §3.4. A transition out of RENDER_TARGET, DEPTH_WRITE, COPY_DEST or RESOLVE_DEST orders that
+  // resource's writers before later work (M2); one between read states orders nothing. Anything else orders all
+  // earlier work before all later work: UAV and aliasing barriers, transitions out of UNORDERED_ACCESS or into a write
+  // state from a read state, COMMON, a split barrier's end (its begin is skipped), a resource we don't know, or one
+  // several queues may use at once. A barrier on some subresources counts for the whole resource.
   void STDMETHODCALLTYPE ResourceBarrier(UINT Count, const D3D12_RESOURCE_BARRIER *barriers) {
     DXMT_STAT_SCOPE("list.ResourceBarrier");
     DXMT_STAT_COUNT("#resource barriers", Count);
-    allocator_->Barrier(true); // M1: every barrier orders all earlier work before all later work (GPU overlap §3.1)
+    transitioned_.clear();
+    bool join = false;
+    for (UINT i = 0; i < Count && !join; i++) {
+      auto &b = barriers[i];
+      if (b.Flags & D3D12_RESOURCE_BARRIER_FLAG_BEGIN_ONLY)
+        continue;
+      auto key = b.Type == D3D12_RESOURCE_BARRIER_TYPE_TRANSITION ? ResourceKey(b.Transition.pResource) : nullptr;
+      if (!key || (b.Flags & D3D12_RESOURCE_BARRIER_FLAG_END_ONLY) ||
+          (static_cast<MTLD3D12Resource *>(b.Transition.pResource)->GetDesc().Flags &
+           D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS)) {
+        join = true;
+        break;
+      }
+      auto before = b.Transition.StateBefore, after = b.Transition.StateAfter;
+      if (ReadOnly(before) && ReadOnly(after))
+        continue;
+      if (!WriteEnds(before) || after == D3D12_RESOURCE_STATE_COMMON) {
+        join = true;
+        break;
+      }
+      transitioned_.push_back(key);
+    }
+    allocator_->Barrier(join, transitioned_.data(), transitioned_.size());
   };
 
   void STDMETHODCALLTYPE ExecuteBundle(ID3D12GraphicsCommandList *CommandList) {

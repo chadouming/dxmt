@@ -94,6 +94,8 @@ class MTLD3D12CommandAllocatorImpl : public MTLD3D12Pageable<MTLD3D12CommandAllo
   std::vector<uint32_t> joins_ = {0};
   std::vector<EncoderData *> group_;
   std::vector<uint32_t> deps_; // scratch
+  // M2: resources leaving a write state, with the barrier call (1-based) that moved them, since the list's last join.
+  std::vector<std::pair<const void *, uint32_t>> transitions_;
 
   small_vector<EncoderData, 64> encoder_lists_;
 
@@ -158,6 +160,7 @@ public:
     barriers_ = 0;
     joins_.assign(1, 0);
     group_.clear();
+    transitions_.clear();
     *pStartEncoder = encoder_last = &encoder_lists_.emplace_back(EncoderType::Null, nullptr);
     return S_OK;
   }
@@ -200,11 +203,26 @@ public:
     return p;
   };
 
-  // A barrier call: `join` when it orders all earlier work before all later work.
+  // A barrier call: `join` when it orders all earlier work before all later work; otherwise the resources it moves
+  // out of a write state, whose writers later work waits on (M2).
   void
-  Barrier(bool join) {
+  Barrier(bool join, const void *const *transitioned = nullptr, size_t count = 0) {
     barriers_++;
     joins_.push_back(joins_.back() + join);
+    if (!join)
+      for (size_t i = 0; i < count; i++)
+        transitions_.push_back({transitioned[i], barriers_});
+  }
+
+  // M2: a resource `g` writes left its write state after g began and before e's last command.
+  bool
+  Transitioned(const EncoderData *g, const EncoderData *e) {
+    for (auto &[resource, at] : transitions_)
+      if (at > g->barriers && at <= e->barriers_last)
+        for (unsigned i = 0; i < g->write_count; i++)
+          if (g->writes[i] == resource)
+            return true;
+    return false;
   }
 
   // MacNeutron: the current encoder writes `resource` (GPU overlap spec §3.2): a DXMT Texture or Buffer object, or a
@@ -233,7 +251,8 @@ public:
 
   // What the closing encoder `e` waits on (GPU overlap spec §3.1). A join (all earlier work) when it is the list's
   // first, may write anything, or a joining barrier came after the previous encoder began and before e's last
-  // command. Otherwise, the encoders since the list's last join that write what it writes or may write anything.
+  // command. Otherwise, the encoders since the list's last join that write what it writes, may write anything, or
+  // wrote a resource a barrier since moved out of its write state.
   // ponytail: every earlier writer, not only the newest, so waits grow with same-target passes in one group; keep
   // the newest writer per resource if dependency waits show in DXMT_STATS.
   void
@@ -243,10 +262,14 @@ public:
     e->join = prev->type == EncoderType::Null || e->writes_unknown || joins_[e->barriers_last] > joins_[prev->barriers];
     if (e->join) {
       group_.clear();
+      // Transitions before e began have their writers behind e, and so behind everything that waits after e.
+      transitions_.erase(std::remove_if(transitions_.begin(), transitions_.end(),
+                                        [&](auto &t) { return t.second <= e->barriers; }),
+                         transitions_.end());
     } else {
       deps_.clear();
       for (auto *g : group_)
-        if (g->writes_unknown || Overlap(g, e))
+        if (g->writes_unknown || Overlap(g, e) || Transitioned(g, e))
           deps_.push_back(g->position);
       if (!deps_.empty()) {
         auto deps = AllocateCommandData<uint32_t>(deps_.size());
