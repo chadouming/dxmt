@@ -50,12 +50,14 @@ Lowering::ElementPointer(dxbc::BufferResourceHandle &buffer, llvm::Value *byte_o
                          llvm::Constant::getNullValue(ptr->getType()));
 }
 
-// `bytes` from `byte_offset` lie inside the buffer's view, computed in 64 bits: an offset near 4 GiB (a -1 index, say)
-// mustn't wrap past the check.
+// `bytes` from `byte_offset` lie inside the buffer's view, without wrapping: an offset near 4 GiB (a -1 index, say)
+// mustn't pass the check. In 32 bits (offset <= length - bytes, length >= bytes): Apple GPUs have no 64-bit integer
+// ALU, and a 64-bit form cost SMITE 2 0.5 ms of vertex time per frame.
 llvm::Value *
 Lowering::InBounds(dxbc::BufferResourceHandle &buffer, llvm::Value *byte_offset, uint64_t bytes) {
-  auto end = ir.CreateAdd(ir.CreateZExt(byte_offset, ir.getInt64Ty()), ir.getInt64(bytes));
-  return ir.CreateICmpULE(end, ir.CreateZExt(conv.DecodeRawBufferByteLength(buffer.Metadata), ir.getInt64Ty()));
+  auto length = conv.DecodeRawBufferByteLength(buffer.Metadata);
+  auto n = ir.getInt32(bytes);
+  return ir.CreateAnd(ir.CreateICmpUGE(length, n), ir.CreateICmpULE(byte_offset, ir.CreateSub(length, n)));
 }
 
 llvm::Value *
