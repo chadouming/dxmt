@@ -283,6 +283,32 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
       StatCount(free);
   }
 
+  // A timestamp taken right after the earlier work, in a blit of its own (Metal drops an empty encoder: it fills 4
+  // bytes of a scratch buffer). For counter buffers an encoder can't take beside another (GPU efficiency spec E2).
+  WMT::Reference<WMT::Buffer> sample_scratch_;
+  void
+  SampleAfter(WMT::CommandBuffer &cmdbuf, obj_handle_t sample_buffer, uint64_t index) {
+    DXMT_STAT_COUNT("#timestamps given their own encoder", 1);
+    if (!sample_scratch_) {
+      WMTBufferInfo info{};
+      info.length = 16;
+      info.options = WMTResourceOptions(WMTResourceStorageModePrivate | WMTResourceHazardTrackingModeUntracked);
+      info.memory.set(nullptr);
+      sample_scratch_ = device_->GetMTLDevice().newBuffer(info);
+    }
+    WMTSampleBufferAttachmentInfo attachment = {sample_buffer, ~0ull, index};
+    auto blit = cmdbuf.blitCommandEncoderWithSampleBuffers(&attachment, 1);
+    auto fence = Join(blit);
+    wmtcmd_blit_fillbuffer fill = {};
+    fill.type = WMTBlitCommandFillBuffer;
+    fill.next.set(nullptr);
+    fill.buffer = sample_scratch_.handle;
+    fill.length = 4;
+    blit.encodeCommands((const wmtcmd_blit_nop *)&fill);
+    blit.updateFence(fences_[fence]);
+    blit.endEncoding();
+  }
+
   // The queue's own encoders (pass dumps, pixel history, presents) join. Returns the fence the encoder then updates.
   template <typename Encoder, typename... Stage>
   uint16_t
@@ -1222,6 +1248,11 @@ public:
             resolve_icbs(fence);
             waits_.assign(1, fence);
           }
+          // Apple GPUs write only the last of an encoder's counter buffers (GPU efficiency spec E2): the pass keeps the
+          // first; each other one's sample gets its own blit right after the pass.
+          WMTRenderPassSampleBufferInfo trailing[std::size(render_pass_info.sample_buffers)] = {};
+          for (unsigned i = 1; i < std::size(render_pass_info.sample_buffers); i++)
+            std::swap(trailing[i], render_pass_info.sample_buffers[i]);
           auto encoder = cmdbuf.renderCommandEncoder(render_pass_info);
           LabelPass(encoder, pass, "render", data);
           // Geometry shader draws (MacNeutron) read resources in the object and mesh stages too.
@@ -1243,6 +1274,9 @@ public:
             skipped_.push_back({m, fence});
           }
           encoder.endEncoding();
+          for (auto &t : trailing)
+            if (t.sample_buffer)
+              SampleAfter(cmdbuf, t.sample_buffer, t.end_of_fragment_sample_index);
           break;
         }
         case EncoderType::Blit: {
