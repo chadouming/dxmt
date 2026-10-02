@@ -66,6 +66,8 @@ private:
   // Bound-checked pointer to `ty` at `byte_offset` in a buffer; null when out of bounds (reads 0, drops writes).
   llvm::Value *ElementPointer(dxbc::BufferResourceHandle &buffer, llvm::Value *byte_offset, llvm::Type *ty);
   llvm::Value *LoadElement(dxbc::BufferResourceHandle &buffer, llvm::Value *byte_offset, llvm::Type *ty);
+  llvm::Value *InBounds(dxbc::BufferResourceHandle &buffer, llvm::Value *byte_offset, uint64_t bytes);
+  uint32_t ExtractedComponents(llvm::CallInst *call);
   // A pointer to `count` consecutive `ty` at `byte_offset`, null unless all are in bounds (E5).
   llvm::Value *AccessPointer(dxbc::BufferResourceHandle &buffer, llvm::Value *byte_offset, llvm::Type *ty, unsigned count);
   void StoreElement(dxbc::BufferResourceHandle &buffer, llvm::Value *byte_offset, llvm::Value *value);

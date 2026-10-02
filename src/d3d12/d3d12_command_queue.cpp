@@ -123,6 +123,8 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
         fence_group_[early_] = group_;
       }
     } else {
+      if (list_join_ == UINT32_MAX) // after the queue's own join inside a list: earlier positions are behind it
+        list_join_ = e->position;
       waits_.assign(1, group_wait_);
       for (uint32_t i = 0; i < e->dep_count; i++)
         if (e->deps[i] >= list_join_) // earlier ones are behind the join, so behind the group fence
@@ -279,7 +281,8 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
       StatCount(listed);
       StatCount(dep_waits, deps);
     }
-    if (std::find(waits_.begin(), waits_.end(), list_fences_[e->position - 1]) == waits_.end())
+    if (e->position && e->position - 1 < list_fences_.size() &&
+        std::find(waits_.begin(), waits_.end(), list_fences_[e->position - 1]) == waits_.end())
       StatCount(free);
   }
 
@@ -304,6 +307,16 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
       return {0, ~0ull};
     DXMT_STAT_COUNT("#timestamps at the next encoder's start", 1);
     return {last.first, last.second};
+  }
+
+  // Waiting timestamps, each in a blit of its own: for an encoder whose start isn't ordered after earlier work (a clear
+  // or resolve waits before its fragment stage only; a pass's indirect resolvers run first) or that Metal drops (no
+  // commands).
+  void
+  FlushPending(WMT::CommandBuffer &cmdbuf) {
+    for (auto [buffer, index] : pending_samples_)
+      SampleAfter(cmdbuf, buffer, index);
+    pending_samples_.clear();
   }
 
   // A timestamp taken right after the earlier work, in a blit of its own (Metal drops an empty encoder: it fills 4
@@ -1200,8 +1213,7 @@ public:
               info.colors[0].depth_plane = data->depth_plane;
             }
             info.render_target_array_length = data->array_length;
-            if (auto [buffer, index] = TakePending(cmdbuf, 0); buffer) // E4
-              info.sample_buffers[0] = {buffer, ~0ull, index};
+            FlushPending(cmdbuf); // E4
             auto encoder = cmdbuf.renderCommandEncoder(info);
             LabelPass(encoder, pass, "clear");
             Encode(encoder, Order(current, strict), WMTRenderStageFragment);
@@ -1279,6 +1291,8 @@ public:
               resolve_icbs(Order(nullptr, true));
             PixelHistory(cmdbuf, data, render_pass_info);
           }
+          if (data->pre_tail && !dumping)
+            FlushPending(cmdbuf); // E4
           if (auto [buffer, index] = TakePending(cmdbuf, render_pass_info.sample_buffers[0].sample_buffer); buffer) { // E4
             if (render_pass_info.sample_buffers[0].sample_buffer)
               render_pass_info.sample_buffers[0].start_of_vertex_sample_index = index;
@@ -1328,6 +1342,8 @@ public:
           unsigned num_samples = data->num_samples;
           for (unsigned i = 0; i < num_samples; i++)
             samples[i] = {data->samples[i].buffer, ~0ull, data->samples[i].index};
+          if (data->cmd_tail == (wmtcmd_base *)&data->cmd_head)
+            FlushPending(cmdbuf); // E4: Metal drops an encoder without commands, samples and all
           if (auto [buffer, index] = TakePending(cmdbuf, num_samples ? samples[0].sample_buffer : 0); buffer) { // E4
             if (!num_samples)
               samples[num_samples++] = {buffer, index, ~0ull};
@@ -1348,6 +1364,8 @@ public:
           unsigned num_samples = data->num_samples;
           for (unsigned i = 0; i < num_samples; i++)
             samples[i] = {data->samples[i].buffer, ~0ull, data->samples[i].index};
+          if (data->cmd_tail == (wmtcmd_base *)&data->cmd_head)
+            FlushPending(cmdbuf); // E4: Metal drops an encoder without commands, samples and all
           if (auto [buffer, index] = TakePending(cmdbuf, num_samples ? samples[0].sample_buffer : 0); buffer) { // E4
             if (!num_samples)
               samples[num_samples++] = {buffer, index, ~0ull};
@@ -1371,8 +1389,7 @@ public:
           info.colors[0].load_action = WMTLoadActionLoad;
           info.colors[0].store_action = WMTStoreActionStoreAndMultisampleResolve;
           info.colors[0].resolve_texture = data->dst.texture();
-          if (auto [buffer, index] = TakePending(cmdbuf, 0); buffer) // E4
-            info.sample_buffers[0] = {buffer, ~0ull, index};
+          FlushPending(cmdbuf); // E4
 
           auto encoder = cmdbuf.renderCommandEncoder(info);
           encoder.setLabel(WMT::String::string("ResolvePass", WMTUTF8StringEncoding));

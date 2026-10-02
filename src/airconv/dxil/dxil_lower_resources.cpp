@@ -46,9 +46,16 @@ Lowering::ElementPointer(dxbc::BufferResourceHandle &buffer, llvm::Value *byte_o
   auto ptr = ir.CreateBitCast(ir.CreateGEP(ir.getInt8Ty(), bytes, byte_offset), ty->getPointerTo(space));
   if (!buffer.Metadata)
     return ptr;
-  auto end = ir.CreateAdd(byte_offset, ir.getInt32(ty->getPrimitiveSizeInBits() / 8));
-  auto in_bounds = ir.CreateICmpULE(end, conv.DecodeRawBufferByteLength(buffer.Metadata));
-  return ir.CreateSelect(in_bounds, ptr, llvm::Constant::getNullValue(ptr->getType()));
+  return ir.CreateSelect(InBounds(buffer, byte_offset, ty->getPrimitiveSizeInBits() / 8), ptr,
+                         llvm::Constant::getNullValue(ptr->getType()));
+}
+
+// `bytes` from `byte_offset` lie inside the buffer's view, computed in 64 bits: an offset near 4 GiB (a -1 index, say)
+// mustn't wrap past the check.
+llvm::Value *
+Lowering::InBounds(dxbc::BufferResourceHandle &buffer, llvm::Value *byte_offset, uint64_t bytes) {
+  auto end = ir.CreateAdd(ir.CreateZExt(byte_offset, ir.getInt64Ty()), ir.getInt64(bytes));
+  return ir.CreateICmpULE(end, ir.CreateZExt(conv.DecodeRawBufferByteLength(buffer.Metadata), ir.getInt64Ty()));
 }
 
 llvm::Value *
@@ -58,9 +65,8 @@ Lowering::AccessPointer(dxbc::BufferResourceHandle &buffer, llvm::Value *byte_of
   auto ptr = ir.CreateBitCast(ir.CreateGEP(ir.getInt8Ty(), bytes, byte_offset), ty->getPointerTo(space));
   if (!buffer.Metadata)
     return ptr;
-  auto end = ir.CreateAdd(byte_offset, ir.getInt32(count * (ty->getPrimitiveSizeInBits() / 8)));
-  auto in_bounds = ir.CreateICmpULE(end, conv.DecodeRawBufferByteLength(buffer.Metadata));
-  return ir.CreateSelect(in_bounds, ptr, llvm::Constant::getNullValue(ptr->getType()));
+  return ir.CreateSelect(InBounds(buffer, byte_offset, count * (ty->getPrimitiveSizeInBits() / 8)), ptr,
+                         llvm::Constant::getNullValue(ptr->getType()));
 }
 
 llvm::Value *
@@ -76,6 +82,21 @@ Lowering::StoreElement(dxbc::BufferResourceHandle &buffer, llvm::Value *byte_off
     air.CreateDeviceCoherentStore(value, ptr);
   else
     ir.CreateStore(value, ptr);
+}
+
+// The components of a ResRet the shader reads (SM 6.0/6.1 BufferLoad names all four: one bounds check covering all of
+// them would zero a load of a view's last dword). Any use but extractvalue of a component: all four.
+uint32_t
+Lowering::ExtractedComponents(llvm::CallInst *call) {
+  uint32_t mask = 0;
+  for (auto *user : call->users()) {
+    auto extract = llvm::dyn_cast<llvm::ExtractValueInst>(user);
+    if (!extract || extract->getNumIndices() != 1)
+      return 0xf;
+    if (extract->getIndices()[0] < 4)
+      mask |= 1u << extract->getIndices()[0];
+  }
+  return mask ? mask : 0x1;
 }
 
 // %dx.types.ResRet.T = {T, T, T, T, i32 status}; components outside `mask` stay undef.
@@ -504,7 +525,7 @@ Lowering::LowerResource(uint32_t opcode, llvm::CallInst *call) {
     return LowerBufferLoad(call, h,
                            structured ? ir.CreateAdd(ir.CreateMul(call->getArgOperand(2), stride), call->getArgOperand(3))
                                       : call->getArgOperand(2),
-                           0xf);
+                           ExtractedComponents(call));
   case op::BufferStore: // (69, handle, i32 index, i32 offset, v0..v3, i8 mask)
     if (kind == ResourceKind::TypedBuffer)
       return LowerTypedBufferStore(call, h, call->getArgOperand(2));
