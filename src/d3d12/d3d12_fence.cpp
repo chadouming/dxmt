@@ -34,7 +34,7 @@ public:
 
   HRESULT
   Initialize(UINT64 InitialValue) {
-    fence = new Fence(device_->GetMTLDevice());
+    fence = new Fence(device_->GetMTLDevice(), device_->fence_helper);
     fence->signal(InitialValue);
     return S_OK;
   }
@@ -86,6 +86,7 @@ public:
   HRESULT STDMETHODCALLTYPE
   Signal(UINT64 Value) {
     DXMT_STAT_SCOPE("fence.Signal");
+    DXMT_STAT_COUNT("#fence signals forwarded to the GPU event", 1);
     fence->signal(Value);
     return S_OK;
   }

@@ -814,16 +814,36 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
   std::atomic_uint64_t inflight_cmdbuf_count_ = 0;
   std::atomic_uint64_t inflight_cmdbuf_stop_ = 0;
 
+  // A fence signal deferred to the CPU (MacNeutron): to the generation it was asked of; `forward`: its MTLEvent signal
+  // too (held back behind timestamps resolved into a custom heap, which the GPU can read).
+  struct DeferredSignal {
+    Rc<Fence> fence;
+    Fence::Generation gen;
+    uint64_t value;
+    bool forward;
+  };
   struct InflightCommandBuffer {
     WMT::Reference<WMT::CommandBuffer> cmdbuf{};
     HANDLE semaphore{};
-    // Done on the CPU once it completes (MacNeutron): timestamp resolves, then the fence signals deferred behind
-    // them, so no fence reports the work done before its timestamps are written.
+    // Done on the CPU once it completes (MacNeutron): waits for the shared events of the fences its queue waited on
+    // through their MTLEvents (GPU overlap spec §3.11), timestamp resolves, then the fence signals deferred behind
+    // them, so no fence reports the work done before its timestamps are written, or before a fence it waited on.
+    bool owes_cpu = false;
+    std::vector<std::pair<WMT::Reference<WMT::SharedEvent>, uint64_t>> waits{};
     std::vector<TimestampResolve> resolves{};
-    std::vector<std::pair<Rc<Fence>, uint64_t>> signals{};
+    std::vector<DeferredSignal> signals{};
   };
   // Command buffers still owing CPU work: while there are any, fence signals go behind them.
   std::atomic_uint32_t cpu_work_ = 0;
+  bool custom_resolves_ = false; // ponytail: sticky once a list resolved timestamps into a custom heap
+
+  void
+  Owe(InflightCommandBuffer &inflight) { // under mutex_commit_
+    if (inflight.owes_cpu)
+      return;
+    inflight.owes_cpu = true;
+    cpu_work_.fetch_add(1, std::memory_order_relaxed);
+  }
 
   std::array<InflightCommandBuffer, kCommandQueueSize> inflight_cmdbuf_pool_;
   dxmt::thread inflight_cmdbuf_wait_thread_;
@@ -851,14 +871,22 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
       if (inflight.semaphore)
         ReleaseSemaphore(inflight.semaphore, 1, nullptr);
 
-      if (!inflight.resolves.empty() || !inflight.signals.empty()) {
+      if (inflight.owes_cpu) {
+        // The GPU passed these MTLEvent waits, so each shared signal is encoded, being retired, or set (spec §3.11).
+        // A failed buffer may not have: then its waits are skipped.
+        if (inflight.cmdbuf.status() != WMTCommandBufferStatusError)
+          for (auto &[shared, value] : inflight.waits)
+            shared.waitUntilSignaledValue(value, ~0ull);
         for (auto &r : inflight.resolves) {
           MTLCounterSampleBuffer_resolveCounterRange(r.samples, r.start, r.count, r.dst, r.count * sizeof(uint64_t));
           for (auto [slot, sample] : r.aliases)
             MTLCounterSampleBuffer_resolveCounterRange(r.samples, sample, 1, (uint64_t *)r.dst + slot, sizeof(uint64_t));
         }
-        for (auto &[fence, value] : inflight.signals)
-          fence->signal(value);
+        for (auto &d : inflight.signals) {
+          d.gen.shared.signalValue(d.value);
+          if (d.forward)
+            d.fence->forward(d.gen, d.value);
+        }
         cpu_work_.fetch_sub(1, std::memory_order_release);
       }
 
@@ -1037,9 +1065,9 @@ public:
     skip_ = 0;
     for (unsigned i = 0; i < Count; i++) {
       auto pCommandList = static_cast<MTLD3D12GraphicsCommandList *>(ppCommandLists[i]);
+      custom_resolves_ |= pCommandList->custom_resolves;
       if (!pCommandList->timestamp_resolves.empty()) {
-        if (scope.inflight.resolves.empty())
-          cpu_work_.fetch_add(1, std::memory_order_relaxed);
+        Owe(scope.inflight);
         scope.inflight.resolves.insert(
             scope.inflight.resolves.end(), pCommandList->timestamp_resolves.begin(), pCommandList->timestamp_resolves.end()
         );
@@ -1282,23 +1310,39 @@ public:
     auto scope = StartCommitting(true);
     auto &cmdbuf = scope.inflight.cmdbuf;
     auto &fence = static_cast<MTLD3D12Fence *>(pFence)->fence;
-    if (cpu_work_.load(std::memory_order_acquire)) { // behind timestamps still to be written: signal once they are
+    auto gen = fence->ask(Value);
+    // Other queues wait on the MTLEvent (GPU overlap spec §3.11): signaled at once, unless timestamps the GPU could
+    // read (a custom heap's) are still to be written.
+    bool owes = cpu_work_.load(std::memory_order_acquire) != 0, hold = owes && custom_resolves_;
+    if (!hold)
+      cmdbuf.encodeSignalEvent(gen.gpu, Value);
+    if (owes) { // behind timestamps still to be written, or fences waited on: signal once they are
       DXMT_STAT_COUNT("#fence signals deferred to the CPU", 1);
-      if (scope.inflight.signals.empty() && scope.inflight.resolves.empty()) // one count per command buffer
-        cpu_work_.fetch_add(1, std::memory_order_relaxed);
-      scope.inflight.signals.push_back({fence, Value});
+      if (hold)
+        DXMT_STAT_COUNT("#fence signals forwarded to the GPU event", 1);
+      Owe(scope.inflight);
+      scope.inflight.signals.push_back({fence, std::move(gen), Value, hold});
       return S_OK;
     }
-    fence->signal(cmdbuf, Value);
+    cmdbuf.encodeSignalEvent(gen.shared, Value);
     return S_OK;
   };
 
   HRESULT STDMETHODCALLTYPE
   Wait(ID3D12Fence *pFence, UINT64 Value) {
     DXMT_STAT_SCOPE("queue.Wait");
+    auto gen = static_cast<MTLD3D12Fence *>(pFence)->fence->current();
+    if (gen.shared.signaledValue() >= Value) {
+      DXMT_STAT_COUNT("#queue waits already met", 1);
+      return S_OK;
+    }
+    // On the MTLEvent (GPU overlap spec §3.11); the shared event's value is then owed before this queue's later
+    // signals reach the CPU.
+    DXMT_STAT_COUNT("#queue waits on the GPU event", 1);
     auto scope = StartCommitting(false);
-    auto &cmdbuf = scope.inflight.cmdbuf;
-    static_cast<MTLD3D12Fence *>(pFence)->fence->wait(cmdbuf, Value);
+    scope.inflight.cmdbuf.encodeWaitForEvent(gen.gpu, Value);
+    Owe(scope.inflight);
+    scope.inflight.waits.push_back({std::move(gen.shared), Value});
     return S_OK;
   };
 

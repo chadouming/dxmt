@@ -27,57 +27,62 @@ namespace dxmt {
 
 class Fence {
 public:
+  // MacNeutron (GPU overlap spec §3.11): one generation of the fence's Metal events. The shared event is what the CPU
+  // sees; queues wait on the MTLEvent, which releases another queue in under 1 us (the shared event: 130-150 us).
+  // Both keep the highest value signaled, so a lower value starts a new generation.
+  struct Generation {
+    WMT::Reference<WMT::SharedEvent> shared;
+    WMT::Reference<WMT::Event> gpu;
+  };
+
   void incRef();
   void decRef();
 
-  WMT::SharedEvent
+  Generation
+  current() const {
+    std::lock_guard<dxmt::mutex> lock(mutex_);
+    return gen_;
+  }
+
+  // A value asked of the fence: a queue Signal as it is encoded, or the CPU's. A value lower than the last asked
+  // starts a new generation. Returns the generation the value goes to.
+  Generation ask(uint64_t value);
+
+  WMT::Reference<WMT::SharedEvent>
   sharedEvent() const {
-    return event_;
+    return current().shared;
   }
 
   uint64_t
-  completedValue() {
-    return event_.signaledValue();
+  completedValue() const {
+    return current().shared.signaledValue();
   }
 
+  // The CPU's Signal: the shared event, then the MTLEvent through the helper queue.
   void
   signal(uint64_t value) {
-    if (value < last_signaled_)
-      reset();
-    else if (value == last_signaled_)
-      return;
-    event_.signalValue(value);
-    last_signaled_ = value;
-  };
-
-  void
-  signal(WMT::CommandBuffer cmdbuf, uint64_t value) {
-    if (value < last_signaled_)
-      reset();
-    else if (value == last_signaled_)
-      return;
-    cmdbuf.encodeSignalEvent(event_, value);
-    last_signaled_ = value;
+    auto gen = ask(value);
+    gen.shared.signalValue(value);
+    if (value)
+      forward(gen, value);
   }
 
-  void
-  wait(uint64_t value, uint64_t timeout = ~0ULL) {
-    event_.waitUntilSignaledValue(value, timeout);
-  }
+  // Signals a generation's MTLEvent from the CPU: a command buffer of one signal on the helper queue.
+  void forward(const Generation &gen, uint64_t value);
 
   void
-  wait(WMT::CommandBuffer cmdbuf, uint64_t value) {
-    cmdbuf.encodeWaitForEvent(event_, value);
+  wait(uint64_t value, uint64_t timeout = ~0ULL) const {
+    current().shared.waitUntilSignaledValue(value, timeout);
   }
 
-  void reset();
-
-  Fence(WMT::Device device);
+  Fence(WMT::Device device, WMT::CommandQueue helper);
 
 private:
   WMT::Device device_;
-  WMT::Reference<WMT::SharedEvent> event_;
-  uint64_t last_signaled_ = 0;
+  WMT::CommandQueue helper_; // the device's; it outlives its fences
+  mutable dxmt::mutex mutex_;
+  Generation gen_;
+  uint64_t last_ = 0;
   std::atomic<uint32_t> refcount_ = {0u};
 };
 

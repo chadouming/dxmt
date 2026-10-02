@@ -58,6 +58,7 @@ public:
   size_t encoder_count = 0; // SIZE_MAX while recording
   uint32_t barrier_count = 0; // its barrier calls (MacNeutron: M3 merges render passes only with none between)
   std::vector<TimestampResolve> timestamp_resolves;
+  bool custom_resolves = false; // some of them into a custom heap, which the GPU can read (GPU overlap spec §3.11)
 };
 
 class MTLD3D12CommandAllocator : public ID3D12CommandAllocator {
@@ -226,6 +227,8 @@ public:
   virtual FormatCapability GetMTLPixelFormatCapability(WMTPixelFormat Format) = 0;
 
   EventListener event_listener;
+  // MacNeutron (GPU overlap spec §3.11): forwards CPU fence signals to the fences' MTLEvents.
+  WMT::Reference<WMT::CommandQueue> fence_helper;
 
   WMT::Reference<WMT::DepthStencilState> default_depth_stencil_state;
 };

@@ -283,6 +283,7 @@ public:
 
     encoder_count = std::numeric_limits<size_t>::max();
     timestamp_resolves.clear();
+    custom_resolves = false;
     return allocator_->StartRecord(&entry);
   }
 
@@ -1843,6 +1844,7 @@ public:
           if (heap->aliases[q] != ~0u)
             job.aliases.push_back({q - i, heap->aliases[q] % kTimestampsPerBuffer});
         timestamp_resolves.push_back(std::move(job));
+        custom_resolves |= dst_heap.Type == D3D12_HEAP_TYPE_CUSTOM;
         i += n;
       }
       return;

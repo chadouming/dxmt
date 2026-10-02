@@ -297,6 +297,7 @@ public:
     WMTDepthStencilInfo info{};
     info.depth_compare_function = WMTCompareFunctionAlways;
     default_depth_stencil_state = GetMTLDevice().newDepthStencilState(info);
+    fence_helper = GetMTLDevice().newCommandQueue(64);
 
     return S_OK;
   };
