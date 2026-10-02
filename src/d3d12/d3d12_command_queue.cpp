@@ -116,7 +116,8 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
       group_++;
       list_join_ = e ? e->position : UINT32_MAX;
       group_wait_ = fence;
-      if (e && e->type == EncoderType::Render && Draws(static_cast<RenderEncoderData *>(e))) {
+      if (!serial && e && e->type == EncoderType::Render && Draws(static_cast<RenderEncoderData *>(e))) {
+        DXMT_STAT_COUNT("#encoder early fences", 1);
         early_ = group_wait_ = next_fence_; // live for the group; the join's own fence covers it for the next join
         next_fence_ = (next_fence_ + 1) % kFences;
         fence_group_[early_] = group_;
@@ -203,7 +204,7 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
             WMTRenderPassInfo &info) {
     merged_.clear();
     folds_.clear();
-    if (!base->join)
+    if (!base->join || base->visibility_buffer) // a pass counting into a query: its counting would reach the next
       return;
     unsigned samples = base->num_samples;
     auto fits = [&](EncoderData *e, unsigned &n) {
@@ -222,7 +223,8 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
     auto barriers = [&]() { return l == last_list ? last->barriers_last : 0u; }; // allowed before cursor, in list l
     for (;;) {
       if (!cursor) { // the end of list l: no barrier after `last` (or anywhere in a list of timestamps alone)
-        if (static_cast<MTLD3D12GraphicsCommandList *>(lists[l])->barrier_count != barriers() || ++l == count)
+        if (static_cast<MTLD3D12GraphicsCommandList *>(lists[l])->barrier_count != barriers() || ++l == count ||
+            std::find(lists + list, lists + l, lists[l]) != lists + l) // a list executed twice in this call
           break;
         cursor = static_cast<MTLD3D12GraphicsCommandList *>(lists[l])->entry;
         continue;
@@ -231,7 +233,7 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
         cursor = cursor->next;
         continue;
       }
-      if (cursor->barriers != barriers())
+      if (cursor->barriers_last != barriers()) // no barrier before it, or inside it, since `last`
         break;
       if (cursor->type == EncoderType::Blit && cursor->timestamp_only) {
         folds_.push_back(cursor);
@@ -447,7 +449,6 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
     std::string file = name + "-" + std::to_string(width) + "x" + std::to_string(height) + "-" + std::to_string(format);
     d.log += " " + file + (samples > 1 ? "-msaa" : "") + "@" + std::to_string(view->allocation ? (uint64_t)view->allocation->texture().handle : 0);
     uint64_t size = width * height * texel;
-    // ponytail: 3 GB cap, so a dump never exhausts memory; raise it for a bigger frame
     if (!texel || samples > 1 || d.bytes + size > (3ull << 30))
       return;
     PassDump dump;
@@ -868,8 +869,9 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
     }
   };
 
- // MacNeutron (GPU overlap spec §3.10): one open Metal command buffer. ExecuteCommandLists and queue Wait encode into
-  // it; Signal and Present commit it, and they are every way the CPU or another queue can wait on this queue's work.
+  // MacNeutron (GPU overlap spec §3.10): an open Metal command buffer. A queue Wait encodes into it and waits for the
+  // next call; ExecuteCommandLists, Signal and Present commit it, so the GPU starts on submitted work at once and
+  // nothing ever waits on uncommitted work.
   bool open_ = false;
 
   // The open command buffer, after taking one of the 32 slots for a new one when none is open (under mutex_commit_).
@@ -1025,7 +1027,7 @@ public:
   void STDMETHODCALLTYPE
   ExecuteCommandLists(UINT Count, ID3D12CommandList *const *ppCommandLists) {
     DXMT_STAT_SCOPE("queue.ExecuteCommandLists");
-    auto scope = StartCommitting(false);
+    auto scope = StartCommitting(true); // commits at once: the GPU starts on it (a Wait before it rides along)
     auto &cmdbuf = scope.inflight.cmdbuf;
     bool dumping = Dumps().Dumping();
     bool serial = serial_ || dumping; // F9 dumps and pixel history see the strict order
@@ -1279,7 +1281,8 @@ public:
     auto &cmdbuf = scope.inflight.cmdbuf;
     auto &fence = static_cast<MTLD3D12Fence *>(pFence)->fence;
     if (cpu_work_.load(std::memory_order_acquire)) { // behind timestamps still to be written: signal once they are
-      if (scope.inflight.signals.empty())
+      DXMT_STAT_COUNT("#fence signals deferred to the CPU", 1);
+      if (scope.inflight.signals.empty() && scope.inflight.resolves.empty()) // one count per command buffer
         cpu_work_.fetch_add(1, std::memory_order_relaxed);
       scope.inflight.signals.push_back({fence, Value});
       return S_OK;
