@@ -99,7 +99,7 @@ class MTLD3D12CommandAllocatorImpl : public MTLD3D12Pageable<MTLD3D12CommandAllo
   // M2: resources leaving a write state, with the barrier call (1-based) that moved them, since the list's last join.
   std::vector<std::pair<const void *, uint32_t>> transitions_;
   EncoderData *clears_from_ = nullptr;        // M4: the encoder before the clears that end the list
-  std::vector<ClearEncoderData *> clears_;    // scratch
+  std::vector<ClearEncoderData *> clears_, kept_; // scratch
 
   small_vector<EncoderData, 64> encoder_lists_;
 
@@ -162,7 +162,7 @@ public:
   // M4 (GPU overlap spec §3.6): the clears that end the list, recorded since the last barrier call, whose view is an
   // attachment of render pass `r` (just opened) become that attachment's clear load action, a later clear of a view
   // winning. A Metal load action clears the render area only: the view must be its size. The other clears are
-  // appended again, ordered anew. Returns the number folded; none with DXMT_D3D12_MERGE=0 (triage).
+  // appended again, in order, ordered anew. Returns the number folded; none with DXMT_D3D12_MERGE=0 (triage).
   unsigned
   FoldClears(RenderEncoderData *r) {
     static const bool on = env::getEnvVar("DXMT_D3D12_MERGE") != "0";
@@ -203,7 +203,16 @@ public:
     clears_.clear();
     for (auto *e = before->next; e; e = e->next)
       clears_.push_back(static_cast<ClearEncoderData *>(e));
-    if (std::none_of(clears_.begin(), clears_.end(), [&](auto *c) { return folds(c, false); }))
+    // Newest first, the clears that stay (kept_, nulled in clears_): those that don't fold, and those a later clear
+    // that stays writes the texture of (through another view), which would otherwise run before them.
+    kept_.clear();
+    for (auto it = clears_.rbegin(); it != clears_.rend(); ++it)
+      if (!folds(*it, false) ||
+          std::any_of(kept_.begin(), kept_.end(), [&](auto *k) { return k->writes[0] == (*it)->writes[0]; })) {
+        kept_.push_back(*it);
+        *it = nullptr;
+      }
+    if (kept_.size() == clears_.size())
       return 0;
     // Unlinked, they leave the list (and its group: only the first of them can have joined) as before them.
     before->next = nullptr;
@@ -211,11 +220,14 @@ public:
     encoder_count_ -= clears_.size();
     group_.resize(group_.size() - clears_.size());
     unsigned folded = 0;
-    for (auto *c : clears_) {
-      if (folds(c, true)) {
+    for (auto *c : clears_)
+      if (c) {
+        folds(c, true);
+        c->~ClearEncoderData(); // out of the list, Reset won't destroy it: its view reference goes now
         folded++;
-        continue;
       }
+    for (auto it = kept_.rbegin(); it != kept_.rend(); ++it) {
+      auto *c = *it;
       c->next = nullptr;
       c->deps = nullptr;
       c->dep_count = 0;
