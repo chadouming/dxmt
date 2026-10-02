@@ -250,6 +250,11 @@ fill_texture_descriptor(MTLTextureDescriptor *desc, struct WMTTextureInfo *info)
   desc.sampleCount = info->sample_count;
   desc.usage = (MTLTextureUsage)info->usage;
   desc.resourceOptions = (MTLResourceOptions)info->options;
+  static SEL compression_mode;
+  if (!compression_mode)
+    compression_mode = sel_registerName("setCompressionMode:");
+  if ((info->flags & WMTTextureFlagLossless) && [desc respondsToSelector:compression_mode])
+    ((void (*)(id, SEL, NSInteger))objc_msgSend)(desc, compression_mode, 1);
 };
 
 void
@@ -264,7 +269,7 @@ extract_texture_descriptor(id<MTLTexture> desc, struct WMTTextureInfo *info) {
   info->sample_count = desc.sampleCount;
   info->usage = desc.usage;
   info->options = (enum WMTResourceOptions)desc.resourceOptions;
-  info->reserved = 0;
+  info->flags = 0;
 };
 
 static NTSTATUS

@@ -1503,7 +1503,7 @@ public:
         auto size_and_align = GetMTLDevice().heapBufferSizeAndAlign(desc->Width, {});
         resource_info.SizeInBytes = size_and_align.size;
       } else {
-        WMTTextureInfo texture_info;
+        WMTTextureInfo texture_info{};
         if (FAILED(PopulateWMTTextureInfo(GetMTLDevice(), texture_info, *desc))) {
           DEBUG("GetResourceAllocationInfo: invalid texture descriptor\n");
           goto invalid;

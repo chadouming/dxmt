@@ -359,7 +359,7 @@ HRESULT CreateDeviceTextureInternal(MTLD3D11Device *pDevice,
                                     const typename tag::DESC1 *pDesc,
                                     const D3D11_SUBRESOURCE_DATA *pInitialData,
                                     typename tag::COM_IMPL **ppTexture) {
-  WMTTextureInfo info;
+  WMTTextureInfo info{};
   typename tag::DESC1 finalDesc;
   if (FAILED(CreateMTLTextureDescriptor(pDevice, pDesc, &finalDesc, &info))) {
     return E_INVALIDARG;
@@ -510,7 +510,7 @@ ImportSharedTextureInternal(
     MTLD3D11Device *pDevice, const typename tag::DESC1 *pDescUnchecked, mach_port_t MachPort, 
     D3DKMT_HANDLE hSharedKeyedMutex, REFIID riid, void **ppTexture
 ) {
-  WMTTextureInfo info;
+  WMTTextureInfo info{};
   typename tag::DESC1 finalDesc;
   if (FAILED(CreateMTLTextureDescriptor(pDevice, pDescUnchecked, &finalDesc, &info)))
     return E_INVALIDARG;

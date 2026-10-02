@@ -515,6 +515,12 @@ struct WMTTextureSwizzleChannels {
   enum WMTTextureSwizzle a;
 };
 
+// MacNeutron (GPU efficiency spec E1): Apple lossless compression requested through the private
+// -[MTLTextureDescriptor setCompressionMode:1] (as D3DMetal does), so PixelFormatView usage doesn't turn it off.
+enum WMTTextureFlag {
+  WMTTextureFlagLossless = 1,
+};
+
 struct WMTTextureInfo {
   enum WMTPixelFormat pixel_format;
   uint32_t width;
@@ -526,7 +532,7 @@ struct WMTTextureInfo {
   uint32_t sample_count       : 8;
   enum WMTTextureUsage usage  : 8;
   enum WMTResourceOptions options;
-  uint32_t reserved;
+  uint32_t flags; // WMTTextureFlag* (MacNeutron)
   mach_port_t mach_port; // in/out
   uint64_t gpu_resource_id; // out
 };

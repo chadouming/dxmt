@@ -17,6 +17,7 @@
  */
 
 #include "d3d12_device.hpp"
+#include "util_env.hpp"
 #include "d3d12_stats.hpp"
 #include "d3d12_pageable.hpp"
 #include "dxmt_format.hpp"
@@ -120,6 +121,15 @@ PopulateWMTTextureInfo(WMT::Device Device, WMTTextureInfo &InfoOut, const D3D12_
   // TODO: decide storage mode
   InfoOut.options = WMTResourceHazardTrackingModeUntracked;
 
+  // MacNeutron (GPU efficiency spec E1): lossless compression, which PixelFormatView usage would otherwise turn off
+  // (D3DMetal does the same). Not for UAVs (D3D12 lets one write through a view of another layout, which corrupts a
+  // compressed texture), linear layouts, cross-adapter resources, or 4KB-aligned ones (sized uncompressed below).
+  static const bool lossless = env::getEnvVar("DXMT_D3D12_COMPRESSION") != "0";
+  InfoOut.flags = 0;
+  if (lossless && !(Desc.Flags & (D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS | D3D12_RESOURCE_FLAG_ALLOW_CROSS_ADAPTER)) &&
+      Desc.Layout == D3D12_TEXTURE_LAYOUT_UNKNOWN && Desc.Alignment != D3D12_SMALL_RESOURCE_PLACEMENT_ALIGNMENT)
+    InfoOut.flags = WMTTextureFlagLossless;
+
   if (Desc.Alignment) {
     if (Desc.Alignment != D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT &&
         Desc.Alignment != D3D12_SMALL_RESOURCE_PLACEMENT_ALIGNMENT &&
@@ -195,7 +205,7 @@ public:
       break;
     }
 
-    WMTTextureInfo texture_info;
+    WMTTextureInfo texture_info{};
     HRESULT hr = PopulateWMTTextureInfo(device_->GetMTLDevice(), texture_info, desc_);
     if (FAILED(hr))
       return hr;
@@ -214,6 +224,8 @@ public:
         return E_INVALIDARG;
     }
 
+    if (texture_info.flags & WMTTextureFlagLossless)
+      DXMT_STAT_COUNT("#textures created compressed", 1);
     texture = new Texture(texture_info, device_->GetMTLDevice());
     Flags<TextureAllocationFlag> flags = {};
     if (pHeap) {

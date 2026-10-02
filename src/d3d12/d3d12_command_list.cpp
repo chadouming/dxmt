@@ -810,7 +810,12 @@ public:
       return;
     }
     auto src_depth = DepthStencilPlanarFlags(src->pixelFormat()), dst_depth = DepthStencilPlanarFlags(dst->pixelFormat());
-    if (!src_bc && !dst_bc && !src_depth && !dst_depth) {
+    // A view of another component layout reads a compressed texture wrong (GPU efficiency spec E1): those go through
+    // the buffer.
+    auto src_layout = MTLGetUnsignedIntegerFormat(src->pixelFormat());
+    bool one_layout = src->pixelFormat() == dst_format.PixelFormat ||
+                      (src_layout != WMTPixelFormatInvalid && src_layout == MTLGetUnsignedIntegerFormat(dst_format.PixelFormat));
+    if (!src_bc && !dst_bc && !src_depth && !dst_depth && one_layout) {
       TextureViewDescriptor view{.format = dst_format.PixelFormat, .type = src->textureType()};
       view.miplevelCount = src->miplevelCount();
       view.arraySize = src->arrayLength();
