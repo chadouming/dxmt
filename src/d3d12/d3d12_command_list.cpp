@@ -627,11 +627,12 @@ public:
     if (!to_metal_primitive_type(topology_, primitive_type, cp_count))
       return;
     DrawCallStatus status = PreDraw();
-    if (status == DrawCallStatus::Invalid)
+    // D3D12 allows an empty draw, Metal doesn't: its pass still opens (and orders as one), with nothing drawn.
+    if (status == DrawCallStatus::Invalid || !VertexCountPerInstance || !InstanceCount)
       return;
     if (pso_graphics_->geometry) {
       auto [vertex_per_warp, increment] = geometry_warp(topology_);
-      if (!VertexCountPerInstance || !InstanceCount || !increment)
+      if (!increment)
         return;
       auto [args, offset] = allocator_->AllocateGPUHeap(sizeof(D3D12_DRAW_ARGUMENTS), 32);
       *(D3D12_DRAW_ARGUMENTS *)args = {VertexCountPerInstance, InstanceCount, StartVertexLocation, StartInstanceLocation};
@@ -664,11 +665,11 @@ public:
     if (!to_metal_primitive_type(topology_, primitive_type, cp_count))
       return;
     DrawCallStatus status = PreDraw(false, true);
-    if (status == DrawCallStatus::Invalid)
+    if (status == DrawCallStatus::Invalid || !IndexCountPerInstance || !InstanceCount) // an empty draw, as above
       return;
     if (pso_graphics_->geometry) { // the object function reads the index buffer from StartIndex (the arguments)
       auto [vertex_per_warp, increment] = geometry_warp(topology_);
-      if (!IndexCountPerInstance || !InstanceCount || !increment)
+      if (!increment)
         return;
       auto [args, offset] = allocator_->AllocateGPUHeap(sizeof(D3D12_DRAW_INDEXED_ARGUMENTS), 32);
       *(D3D12_DRAW_INDEXED_ARGUMENTS *)args = {IndexCountPerInstance, InstanceCount, StartVertexLocation, BaseVertexLocation,
