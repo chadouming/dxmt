@@ -449,7 +449,9 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
     std::string file = name + "-" + std::to_string(width) + "x" + std::to_string(height) + "-" + std::to_string(format);
     d.log += " " + file + (samples > 1 ? "-msaa" : "") + "@" + std::to_string(view->allocation ? (uint64_t)view->allocation->texture().handle : 0);
     uint64_t size = width * height * texel;
-    if (!texel || samples > 1 || d.bytes + size > (3ull << 30))
+    // At most 3 GB of attachments per dump, 12 GB for a burst of frames (DXMT_DUMP_FRAMES), held in memory until saved.
+    // ponytail: a fixed budget; save each frame as it completes if bursts need more.
+    if (!texel || samples > 1 || d.bytes + size > (d.count > 1 ? 12ull << 30 : 3ull << 30))
       return;
     PassDump dump;
     dump.info.length = size;
