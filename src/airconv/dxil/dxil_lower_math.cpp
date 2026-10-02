@@ -117,12 +117,7 @@ Lowering::LowerMath(uint32_t opcode, llvm::CallInst *call) {
                                ir.CreateZExtOrTrunc(ir.CreateExtractValue(r, {1}), ty->getStructElementType(1))}));
   }
 
-  case op::FMad: // not fused, like D3D's mad (fused in pre-raster stages with DXMT_DXIL_VS_FAST=1, an experiment)
-    if (DxilVsFast() && (entry.kind == ShaderKind::Vertex || entry.kind == ShaderKind::Geometry ||
-                         entry.kind == ShaderKind::Hull || entry.kind == ShaderKind::Domain))
-      return done(DxilVsFast() == 1 ? air.CreateFMA(arg(1), arg(2), arg(3))
-                                    : ir.CreateIntrinsic(llvm::Intrinsic::fmuladd, {arg(1)->getType()}, {arg(1), arg(2), arg(3)}));
-    return done(ir.CreateFAdd(ir.CreateFMul(arg(1), arg(2)), arg(3)));
+  case op::FMad: return done(ir.CreateFAdd(ir.CreateFMul(arg(1), arg(2)), arg(3))); // not fused, like D3D's mad
   case op::Fma: return done(air.CreateFMA(arg(1), arg(2), arg(3)));
   case op::IMad:
   case op::UMad: return done(ir.CreateAdd(ir.CreateMul(arg(1), arg(2)), arg(3)));

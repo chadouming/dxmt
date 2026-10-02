@@ -90,7 +90,7 @@ Lowering::LowerBufferLoad(llvm::CallInst *call, const HandleInfo &h, llvm::Value
   }
   llvm::Value *fields[5] = {};
   unsigned size = elem->getPrimitiveSizeInBits() / 8;
-  if (DxilBoundsOnce()) { // one check for every component loaded: all of them or none
+  if (!DxilBoundsPerComponent()) { // one check for every component loaded: all of them or none (E5)
     auto base = AccessPointer(*buffer, byte_offset, elem, 32 - __builtin_clz(mask));
     for (unsigned c = 0; c < 4; c++)
       if (mask & (1 << c)) {

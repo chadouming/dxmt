@@ -470,7 +470,7 @@ _MTLCommandBuffer_renderCommandEncoder(void *obj) {
       continue;
     MTLRenderPassSampleBufferAttachmentDescriptor *sample = descriptor.sampleBufferAttachments[i];
     sample.sampleBuffer = (id<MTLCounterSampleBuffer>)info->sample_buffers[i].sample_buffer;
-    sample.startOfVertexSampleIndex = MTLCounterDontSample;
+    sample.startOfVertexSampleIndex = info->sample_buffers[i].start_of_vertex_sample_index;
     sample.endOfVertexSampleIndex = MTLCounterDontSample;
     sample.startOfFragmentSampleIndex = MTLCounterDontSample;
     sample.endOfFragmentSampleIndex = info->sample_buffers[i].end_of_fragment_sample_index;

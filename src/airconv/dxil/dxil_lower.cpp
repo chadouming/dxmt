@@ -71,14 +71,9 @@ Switch(const char *name, const char *value) {
   auto v = std::getenv(name);
   return v && !strcmp(v, value);
 }
-int
-DxilVsFast() {
-  static const int mode = Switch("DXMT_DXIL_VS_FAST", "1") ? 1 : Switch("DXMT_DXIL_VS_FAST", "late") ? 2 : 0;
-  return mode;
-}
 bool
-DxilBoundsOnce() {
-  static const bool on = Switch("DXMT_DXIL_BOUNDS", "once");
+DxilBoundsPerComponent() {
+  static const bool on = Switch("DXMT_DXIL_BOUNDS", "component");
   return on;
 }
 

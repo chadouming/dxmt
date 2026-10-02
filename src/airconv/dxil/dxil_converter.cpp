@@ -249,7 +249,7 @@ LowerBody(const DXILShader &dxil, struct context &ctx, llvm::Function *dxil_main
       } else if (llvm::isa<llvm::FPMathOperator>(&inst)) {
         inst.setHasNoNaNs(false);
         inst.setHasNoInfs(false);
-        if (pre_raster && DxilVsFast() != 1) {
+        if (pre_raster) {
           inst.setHasAllowReassoc(false);
           inst.setHasAllowContract(false);
           inst.setHasAllowReciprocal(false);
@@ -363,10 +363,6 @@ ConvertDXIL(SM50ShaderInternal *shader, const char *name, llvm::LLVMContext &con
                              : setup_binding_table2(shader_info, func_signature, *module);
 
   auto [function, function_metadata] = func_signature.CreateFunction(name, context, *module, 0, false);
-  if (DxilVsFast() == 2 && (dxil.entry.kind == ShaderKind::Vertex || dxil.entry.kind == ShaderKind::Geometry ||
-                            dxil.entry.kind == ShaderKind::Hull || dxil.entry.kind == ShaderKind::Domain))
-    for (auto attr : {"invariance-late-contract", "invariance-late-reassoc", "invariance-late-unsafe-fp-math"})
-      function->addFnAttr(attr);
   auto entry_bb = llvm::BasicBlock::Create(context, "entry", function);
   auto epilogue_bb = llvm::BasicBlock::Create(context, "epilogue", function);
   llvm::IRBuilder<> builder(entry_bb);

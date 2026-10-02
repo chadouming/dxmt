@@ -214,7 +214,7 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
         for (unsigned j = 0; j < n; j++)
           if (info.sample_buffers[j].sample_buffer == e->samples[k].buffer)
             return false;
-        info.sample_buffers[n++] = {e->samples[k].buffer, e->samples[k].index};
+        info.sample_buffers[n++] = {e->samples[k].buffer, e->samples[k].index, ~0ull};
       }
       return true;
     };
@@ -281,6 +281,29 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
     }
     if (std::find(waits_.begin(), waits_.end(), list_fences_[e->position - 1]) == waits_.end())
       StatCount(free);
+  }
+
+  // GPU efficiency spec E4: lone timestamps (timestamp-only blits) waiting, in order, for the start of the next encoder
+  // the queue encodes; and whether one of them was its list's join (the encoder after them joins then).
+  std::vector<std::pair<obj_handle_t, uint32_t>> pending_samples_;
+  bool pending_join_ = false;
+
+  // The latest pending timestamp, for the start of an encoder whose own samples are all in `own` (0: it has none):
+  // Apple GPUs write one counter buffer per encoder. The earlier ones (or all of them, if it doesn't fit) get blits of
+  // their own first, so the values stay in order. Returns {buffer, index}, or {0, ~0}.
+  std::pair<obj_handle_t, uint64_t>
+  TakePending(WMT::CommandBuffer &cmdbuf, obj_handle_t own) {
+    if (pending_samples_.empty())
+      return {0, ~0ull};
+    auto last = pending_samples_.back();
+    bool fits = !own || own == last.first;
+    for (size_t k = 0; k + (fits ? 1 : 0) < pending_samples_.size(); k++)
+      SampleAfter(cmdbuf, pending_samples_[k].first, pending_samples_[k].second);
+    pending_samples_.clear();
+    if (!fits)
+      return {0, ~0ull};
+    DXMT_STAT_COUNT("#timestamps at the next encoder's start", 1);
+    return {last.first, last.second};
   }
 
   // A timestamp taken right after the earlier work, in a blit of its own (Metal drops an empty encoder: it fills 4
@@ -1089,6 +1112,7 @@ public:
     auto &cmdbuf = scope.inflight.cmdbuf;
     bool dumping = Dumps().Dumping();
     bool serial = serial_ || dumping; // F9 dumps and pixel history see the strict order
+    bool fold_timestamps = !dumping && merge_; // E4; dumps keep D3D12's passes
     skipped_.clear();
     skip_ = 0;
     for (unsigned i = 0; i < Count; i++) {
@@ -1114,6 +1138,16 @@ public:
           current = current->next;
           continue;
         }
+        if (fold_timestamps && current->type == EncoderType::Blit && current->timestamp_only) { // E4
+          for (unsigned k = 0; k < current->num_samples; k++)
+            pending_samples_.push_back({current->samples[k].buffer, current->samples[k].index});
+          pending_join_ |= current->join;
+          current = current->next;
+          continue;
+        }
+        bool strict = serial || (current->type != EncoderType::Null && pending_join_);
+        if (current->type != EncoderType::Null)
+          pending_join_ = false;
         unsigned pass = 0;
         if (g_stats_on) {
           static const unsigned kinds[] = {StatId("#null encoders"),   StatId("#clear passes"),
@@ -1166,9 +1200,11 @@ public:
               info.colors[0].depth_plane = data->depth_plane;
             }
             info.render_target_array_length = data->array_length;
+            if (auto [buffer, index] = TakePending(cmdbuf, 0); buffer) // E4
+              info.sample_buffers[0] = {buffer, ~0ull, index};
             auto encoder = cmdbuf.renderCommandEncoder(info);
             LabelPass(encoder, pass, "clear");
-            Encode(encoder, Order(current, serial), WMTRenderStageFragment);
+            Encode(encoder, Order(current, strict), WMTRenderStageFragment);
             encoder.endEncoding();
           }
           break;
@@ -1225,7 +1261,7 @@ public:
             render_pass_info.visibility_buffer = data->visibility_buffer;
             render_pass_info.visibility_accumulate = data->visibility_buffer != 0;
             for (unsigned i = 0; i < data->num_samples; i++)
-              render_pass_info.sample_buffers[i] = {data->samples[i].buffer, data->samples[i].index};
+              render_pass_info.sample_buffers[i] = {data->samples[i].buffer, data->samples[i].index, ~0ull};
           }
           if (!dumping && merge_) // M3: also in strict order, the default; dumps keep D3D12's passes
             PlanMerge(data, i, ppCommandLists, Count, render_pass_info);
@@ -1243,7 +1279,13 @@ public:
               resolve_icbs(Order(nullptr, true));
             PixelHistory(cmdbuf, data, render_pass_info);
           }
-          uint16_t fence = Order(current, serial), early = early_;
+          if (auto [buffer, index] = TakePending(cmdbuf, render_pass_info.sample_buffers[0].sample_buffer); buffer) { // E4
+            if (render_pass_info.sample_buffers[0].sample_buffer)
+              render_pass_info.sample_buffers[0].start_of_vertex_sample_index = index;
+            else
+              render_pass_info.sample_buffers[0] = {buffer, ~0ull, index};
+          }
+          uint16_t fence = Order(current, strict), early = early_;
           if (data->pre_tail && !dumping) { // the resolvers wait as the pass would; the pass waits on them alone
             resolve_icbs(fence);
             waits_.assign(1, fence);
@@ -1283,12 +1325,19 @@ public:
           DXMT_STAT_SCOPE("queue.(encode blit)");
           auto data = static_cast<BlitEncoderData *>(current);
           WMTSampleBufferAttachmentInfo samples[4];
-          for (unsigned i = 0; i < data->num_samples; i++)
+          unsigned num_samples = data->num_samples;
+          for (unsigned i = 0; i < num_samples; i++)
             samples[i] = {data->samples[i].buffer, ~0ull, data->samples[i].index};
-          auto encoder = data->num_samples ? cmdbuf.blitCommandEncoderWithSampleBuffers(samples, data->num_samples)
+          if (auto [buffer, index] = TakePending(cmdbuf, num_samples ? samples[0].sample_buffer : 0); buffer) { // E4
+            if (!num_samples)
+              samples[num_samples++] = {buffer, index, ~0ull};
+            else
+              samples[0].start_of_encoder_sample_index = index;
+          }
+          auto encoder = num_samples ? cmdbuf.blitCommandEncoderWithSampleBuffers(samples, num_samples)
                                            : cmdbuf.blitCommandEncoder();
           LabelPass(encoder, pass, "blit");
-          Encode(encoder, Order(current, serial), &data->cmd_head, data->cmd_tail);
+          Encode(encoder, Order(current, strict), &data->cmd_head, data->cmd_tail);
           encoder.endEncoding();
           break;
         }
@@ -1296,12 +1345,19 @@ public:
           DXMT_STAT_SCOPE("queue.(encode compute)");
           auto data = static_cast<ComputeEncoderData *>(current);
           WMTSampleBufferAttachmentInfo samples[4];
-          for (unsigned i = 0; i < data->num_samples; i++)
+          unsigned num_samples = data->num_samples;
+          for (unsigned i = 0; i < num_samples; i++)
             samples[i] = {data->samples[i].buffer, ~0ull, data->samples[i].index};
-          auto encoder = data->num_samples ? cmdbuf.computeCommandEncoderWithSampleBuffers(false, samples, data->num_samples)
+          if (auto [buffer, index] = TakePending(cmdbuf, num_samples ? samples[0].sample_buffer : 0); buffer) { // E4
+            if (!num_samples)
+              samples[num_samples++] = {buffer, index, ~0ull};
+            else
+              samples[0].start_of_encoder_sample_index = index;
+          }
+          auto encoder = num_samples ? cmdbuf.computeCommandEncoderWithSampleBuffers(false, samples, num_samples)
                                            : cmdbuf.computeCommandEncoder(false);
           LabelPass(encoder, pass, "compute");
-          Encode(encoder, Order(current, serial), &data->cmd_head, data->cmd_tail);
+          Encode(encoder, Order(current, strict), &data->cmd_head, data->cmd_tail);
           encoder.endEncoding();
           break;
         }
@@ -1315,10 +1371,12 @@ public:
           info.colors[0].load_action = WMTLoadActionLoad;
           info.colors[0].store_action = WMTStoreActionStoreAndMultisampleResolve;
           info.colors[0].resolve_texture = data->dst.texture();
+          if (auto [buffer, index] = TakePending(cmdbuf, 0); buffer) // E4
+            info.sample_buffers[0] = {buffer, ~0ull, index};
 
           auto encoder = cmdbuf.renderCommandEncoder(info);
           encoder.setLabel(WMT::String::string("ResolvePass", WMTUTF8StringEncoding));
-          Encode(encoder, Order(current, serial), WMTRenderStageFragment);
+          Encode(encoder, Order(current, strict), WMTRenderStageFragment);
           encoder.endEncoding();
 
           break;
@@ -1329,6 +1387,10 @@ public:
         current = current->next;
       }
     }
+    for (auto [buffer, index] : pending_samples_) // E4: lone timestamps after the call's last encoder
+      SampleAfter(cmdbuf, buffer, index);
+    pending_samples_.clear();
+    pending_join_ = false;
   };
 
   void STDMETHODCALLTYPE SetMarker(UINT metadata, const void *data, UINT size) {

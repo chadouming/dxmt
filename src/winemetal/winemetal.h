@@ -694,7 +694,8 @@ struct WMTStencilAttachmentInfo {
 // A timestamp sampled at the end of a render pass (MacNeutron; D3D12 timestamps). Unused when sample_buffer is 0.
 struct WMTRenderPassSampleBufferInfo {
   obj_handle_t sample_buffer;
-  uint64_t end_of_fragment_sample_index;
+  uint64_t end_of_fragment_sample_index;   // ~0: none
+  uint64_t start_of_vertex_sample_index;   // ~0: none (MacNeutron, GPU efficiency spec E4)
 };
 
 struct WMTRenderPassInfo {
