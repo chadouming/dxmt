@@ -274,7 +274,9 @@ class MTLD3D12DeviceImpl : public MTLD3D12Object<ComObject<MTLD3D12Device>> {
   Rc<Buffer> null_buffer_;
   BufferViewKey null_buffer_view_;
   WMT::Reference<WMT::ResidencySet> residency_set_;
-  std::map<uint64_t, BufferAllocation *> interval_map_;
+  // MacNeutron: by GPU address. Placed buffers at one heap offset share theirs (aliasing): a lookup finds the newest
+  // registered, and a release removes only its own entry (it used to remove the address, or keep a released buffer).
+  std::multimap<uint64_t, BufferAllocation *> interval_map_;
 
   InternalCommandLibrary command_library;
   FormatCapabilityInspector format_inspector_;
@@ -1638,7 +1640,12 @@ public:
   HRESULT
   UnregisterResidencyAndVA(BufferAllocation *allocation) {
     std::unique_lock<dxmt::mutex> lock(residency_lock_);
-    interval_map_.erase(allocation->gpuAddress());
+    auto [first, last] = interval_map_.equal_range(allocation->gpuAddress());
+    for (auto it = first; it != last; ++it)
+      if (it->second == allocation) {
+        interval_map_.erase(it);
+        break;
+      }
     if (allocation->flags().test(BufferAllocationFlag::AllocatedOnHeap))
       return S_OK;
     auto buffer = allocation->buffer();
