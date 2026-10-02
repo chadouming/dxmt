@@ -133,6 +133,7 @@ public:
   UINT UpdateRootArguments : 1;
   UINT UpdateVertexBuffers : 1;
   UINT UpdateIndexBuffer   : 1;
+  UINT ByteStride; // between commands in the argument buffer (MacNeutron)
 
   WMT::Reference<WMT::ComputePipelineState> render_resolver; // a kernel: run before the render pass (MacNeutron)
   WMT::Reference<WMT::ComputePipelineState> compute_resolver;

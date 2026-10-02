@@ -1961,6 +1961,39 @@ public:
       IMPLEMENT_ME // TODO: (potential) emulated pipeline
     }
 
+    // MacNeutron (GPU efficiency E10): a signature that sets nothing but the draw, uncounted, draws straight from the
+    // argument buffer (D3D12's draw arguments are laid out as Metal's), with no indirect command buffer and no resolver
+    // pass before the render pass, which then merges like any other (M3). DXMT_D3D12_INDIRECT=icb: always the ICB.
+    static const bool native = env::getEnvVar("DXMT_D3D12_INDIRECT") != "icb";
+    if (native && !encode_binding && !pCountBuffer) {
+      bool indexed = sig->CommandType == D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED;
+      if (indexed && !index_buffer) // undefined in D3D12; drawing nothing beats reading no buffer
+        return;
+      DXMT_STAT_COUNT("#ExecuteIndirect native", 1);
+      auto args = arg_buffer->buffer->current()->buffer();
+      // ponytail: one Metal draw per command; a huge uncounted MaxCommandCount would want the ICB back
+      for (UINT i = 0; i < MaxCommandCount; i++) {
+        uint64_t offset = ArgBufferOffset + uint64_t(i) * sig->ByteStride;
+        if (indexed) {
+          auto &cmd = allocator_->EncodeRenderCommand<wmtcmd_render_draw_indexed_indirect>();
+          cmd.type = WMTRenderCommandDrawIndexedIndirect;
+          cmd.primitive_type = primitive_type;
+          cmd.index_type = index_type;
+          cmd.index_buffer = index_buffer;
+          cmd.index_buffer_offset = index_offset;
+          cmd.indirect_args_buffer = args;
+          cmd.indirect_args_offset = offset;
+        } else {
+          auto &cmd = allocator_->EncodeRenderCommand<wmtcmd_render_draw_indirect>();
+          cmd.type = WMTRenderCommandDrawIndirect;
+          cmd.primitive_type = primitive_type;
+          cmd.indirect_args_buffer = args;
+          cmd.indirect_args_offset = offset;
+        }
+      }
+      return;
+    }
+
     auto cmd = allocator_->EncodeIndirectRenderCommand(sig, pso_graphics_.ptr(), MaxCommandCount);
     cmd->max_count_buffer = CountBufferAddress;
     cmd->argument_buffer = ArgBufferAddress;
