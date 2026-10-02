@@ -21,6 +21,7 @@
 #include "d3d12_pageable.hpp"
 #include "dxmt_command_clear.hpp"
 #include "dxmt_ring_bump_allocator.hpp"
+#include "util_env.hpp"
 #include <algorithm>
 
 namespace dxmt {
@@ -97,6 +98,8 @@ class MTLD3D12CommandAllocatorImpl : public MTLD3D12Pageable<MTLD3D12CommandAllo
   std::vector<const void *> covered_; // scratch: resources whose older writers a dependency already covers
   // M2: resources leaving a write state, with the barrier call (1-based) that moved them, since the list's last join.
   std::vector<std::pair<const void *, uint32_t>> transitions_;
+  EncoderData *clears_from_ = nullptr;        // M4: the encoder before the clears that end the list
+  std::vector<ClearEncoderData *> clears_;    // scratch
 
   small_vector<EncoderData, 64> encoder_lists_;
 
@@ -147,11 +150,80 @@ public:
     if (!encoder_current)
       return;
     Decide(encoder_current);
+    if (encoder_current->type == EncoderType::Clear && encoder_last->type != EncoderType::Clear)
+      clears_from_ = encoder_last;
     encoder_last->next = encoder_current;
     encoder_last = encoder_current;
 
     encoder_current = nullptr;
     encoder_count_++;
+  }
+
+  // M4 (GPU overlap spec §3.6): the clears that end the list, recorded since the last barrier call, whose view is an
+  // attachment of render pass `r` (just opened) become that attachment's clear load action, a later clear of a view
+  // winning. A Metal load action clears the render area only: the view must be its size. The other clears are
+  // appended again, ordered anew. Returns the number folded; none with DXMT_D3D12_MERGE=0 (triage).
+  unsigned
+  FoldClears(RenderEncoderData *r) {
+    static const bool on = env::getEnvVar("DXMT_D3D12_MERGE") != "0";
+    if (!on || encoder_last->type != EncoderType::Clear)
+      return 0;
+    auto *before = clears_from_;
+    while (before->next->barriers != r->barriers) // a barrier after these clears: they stay
+      if (!(before = before->next)->next)
+        return 0;
+    auto folds = [&](ClearEncoderData *c, bool apply) {
+      if (c->width != r->render_target_width || c->height != r->render_target_height ||
+          c->array_length != r->render_target_array_length)
+        return false;
+      if (c->clear_dsv) {
+        if (((c->clear_dsv & 1) && r->depth.attachment.ptr() != c->attachment.ptr()) ||
+            ((c->clear_dsv & 2) && r->stencil.attachment.ptr() != c->attachment.ptr()))
+          return false;
+        if (apply && (c->clear_dsv & 1)) {
+          r->depth.load_action = WMTLoadActionClear;
+          r->depth.clear_depth = c->depth_stencil.first;
+        }
+        if (apply && (c->clear_dsv & 2)) {
+          r->stencil.load_action = WMTLoadActionClear;
+          r->stencil.clear_stencil = c->depth_stencil.second;
+        }
+        return true;
+      }
+      for (auto &color : r->colors)
+        if (color.attachment && color.attachment.ptr() == c->attachment.ptr() && color.depth_plane == c->depth_plane) {
+          if (apply) {
+            color.load_action = WMTLoadActionClear;
+            color.clear_color = c->color;
+          }
+          return true;
+        }
+      return false;
+    };
+    clears_.clear();
+    for (auto *e = before->next; e; e = e->next)
+      clears_.push_back(static_cast<ClearEncoderData *>(e));
+    if (std::none_of(clears_.begin(), clears_.end(), [&](auto *c) { return folds(c, false); }))
+      return 0;
+    // Unlinked, they leave the list (and its group: only the first of them can have joined) as before them.
+    before->next = nullptr;
+    encoder_last = before;
+    encoder_count_ -= clears_.size();
+    group_.resize(group_.size() - clears_.size());
+    unsigned folded = 0;
+    for (auto *c : clears_) {
+      if (folds(c, true)) {
+        folded++;
+        continue;
+      }
+      c->next = nullptr;
+      c->deps = nullptr;
+      c->dep_count = 0;
+      encoder_current = c;
+      InvalidateCurrentPass();
+    }
+    encoder_current = r;
+    return folded;
   }
 
   HRESULT
