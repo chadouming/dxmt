@@ -357,6 +357,7 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
     std::mutex mutex;
     std::atomic_uint64_t frames = 0;
     std::atomic_uint64_t frame = ~0ull;
+    uint64_t count = 1; // DXMT_DUMP_FRAMES: consecutive frames per dump (a one-frame glitch is hard to catch with F9)
     bool on_key = false;
     uint32_t saved = 0; // the last f9-<n> folder used; the next F9 takes the first free one after it
     uint32_t passes = 0, queues = 0;
@@ -384,6 +385,12 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
     std::vector<PixelPass> pixel_passes;
     std::vector<WMT::Reference<WMT::Texture>> pixel_textures; // scratch, kept until the dumped frame completes
 
+    bool
+    Dumping() { // the frame now encoding is one of the dumped ones
+      uint64_t f = frame;
+      return f != ~0ull && frames - f < count;
+    }
+
     PassDumps() {
       auto value = env::getEnvVar("DXMT_DUMP_FRAME");
       if (value.empty() || !DXILCaptureMode())
@@ -392,6 +399,10 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
       try {
         frame = std::stoull(value);
       } catch (const std::invalid_argument &) {
+      }
+      try {
+        count = std::max<uint64_t>(1, std::stoull(env::getEnvVar("DXMT_DUMP_FRAMES")));
+      } catch (const std::exception &) {
       }
       // Points joined by '+'; the pass range and mode follow the last one.
       std::string spec = env::getEnvVar("DXMT_DUMP_PIXEL");
@@ -1016,7 +1027,7 @@ public:
     DXMT_STAT_SCOPE("queue.ExecuteCommandLists");
     auto scope = StartCommitting(false);
     auto &cmdbuf = scope.inflight.cmdbuf;
-    bool dumping = Dumps().frames == Dumps().frame;
+    bool dumping = Dumps().Dumping();
     bool serial = serial_ || dumping; // F9 dumps and pixel history see the strict order
     skipped_.clear();
     skip_ = 0;
@@ -1332,9 +1343,13 @@ public:
     HRESULT hr = PresentFrame(presenter, backbuffer, hLantecyWaitable, after);
     // Once the present is committed: start or stop a frame capture at this boundary.
     auto &dumps = Dumps();
+    if (dumps.Dumping()) { // the end of a dumped frame, in passes.txt
+      std::lock_guard<std::mutex> lock(dumps.mutex);
+      dumps.log += "# frame " + std::to_string(dumps.frames - dumps.frame) + " presented\n";
+    }
     uint64_t frames = ++dumps.frames;
     StatsFrame();
-    if (frames == dumps.frame + 8)
+    if (dumps.frame != ~0ull && frames == dumps.frame + dumps.count - 1 + 8)
       SaveDumps();
     else if (dumps.on_key && dumps.frame == ~0ull && (GetAsyncKeyState(VK_F9) & 0x8000))
       dumps.frame = frames; // the frame now starting
