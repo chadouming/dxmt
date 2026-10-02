@@ -284,6 +284,7 @@ public:
     encoder_count = std::numeric_limits<size_t>::max();
     timestamp_resolves.clear();
     custom_resolves = false;
+    barrier_names.clear();
     return allocator_->StartRecord(&entry);
   }
 
@@ -1329,6 +1330,18 @@ public:
       transitioned_.push_back(key);
     }
     allocator_->Barrier(join, transitioned_.data(), transitioned_.size());
+    auto call = allocator_->BarrierCalls();
+    for (UINT i = 0; i < Count; i++) { // E7
+      auto &b = barriers[i];
+      if (b.Type == D3D12_RESOURCE_BARRIER_TYPE_TRANSITION)
+        barrier_names.push_back({call, ResourceKey(b.Transition.pResource)});
+      else if (b.Type == D3D12_RESOURCE_BARRIER_TYPE_UAV)
+        barrier_names.push_back({call, ResourceKey(b.UAV.pResource)});
+      else {
+        barrier_names.push_back({call, b.Aliasing.pResourceBefore ? ResourceKey(b.Aliasing.pResourceBefore) : nullptr});
+        barrier_names.push_back({call, b.Aliasing.pResourceAfter ? ResourceKey(b.Aliasing.pResourceAfter) : nullptr});
+      }
+    }
   };
 
   void STDMETHODCALLTYPE ExecuteBundle(ID3D12GraphicsCommandList *CommandList) {

@@ -127,6 +127,27 @@ struct RenderEncoderData : EncoderData {
   wmtcmd_base *pre_tail = nullptr;
 };
 
+// A clear-only pass `c` as `r`'s load action (M4 at recording, E7 at execution): the attachment of `r` that is `c`'s
+// view (each plane it clears), with `r`'s render area its size (a Metal load action clears the render area only).
+// Returns the colour attachment's index, kClearDepthStencil for the depth and stencil planes, or -1.
+constexpr int kClearDepthStencil = 8;
+inline int
+ClearSlot(const ClearEncoderData *c, const RenderEncoderData *r) {
+  if (c->width != r->render_target_width || c->height != r->render_target_height ||
+      c->array_length != r->render_target_array_length)
+    return -1;
+  if (c->clear_dsv)
+    return ((c->clear_dsv & 1) && r->depth.attachment.ptr() != c->attachment.ptr()) ||
+                   ((c->clear_dsv & 2) && r->stencil.attachment.ptr() != c->attachment.ptr())
+               ? -1
+               : kClearDepthStencil;
+  for (unsigned i = 0; i < r->colors.size(); i++)
+    if (r->colors[i].attachment && r->colors[i].attachment.ptr() == c->attachment.ptr() &&
+        r->colors[i].depth_plane == c->depth_plane)
+      return i;
+  return -1;
+}
+
 struct BlitEncoderData : EncoderData {
   wmtcmd_blit_nop cmd_head;
   wmtcmd_base *cmd_tail;

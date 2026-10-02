@@ -286,6 +286,93 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
       StatCount(free);
   }
 
+  // GPU efficiency spec E7: clear-only passes folded, for this call, into a later render pass's load action:
+  // {list index, target, clear}.
+  struct ClearFold {
+    unsigned list;
+    EncoderData *target;
+    ClearEncoderData *clear;
+  };
+  std::vector<ClearFold> clear_folds_;
+
+  // A barrier call in (after, until] of `list` names `texture` (or may: an unknown resource).
+  static bool
+  BarrierNames(MTLD3D12GraphicsCommandList *list, uint32_t after, uint32_t until, const void *texture) {
+    for (auto &[call, key] : list->barrier_names)
+      if (call > after && call <= until && (!key || key == texture))
+        return true;
+    return false;
+  }
+
+  // E7: the render pass in this call (from lists[l], after `clear`) that `clear` can be the load action of: the first
+  // encoder after it but for list boundaries, timestamp-only blits and other textures' clears, with no barrier
+  // naming its texture between. In D3D12 a render target can only be read through an encoder after a transition
+  // naming it, so nothing between can see the clear done late. Null (counting why) if none.
+  RenderEncoderData *
+  ClearTarget(ClearEncoderData *clear, unsigned l, ID3D12CommandList *const *lists, unsigned count, unsigned &at) {
+    auto texture = clear->write_count ? clear->writes[0] : nullptr;
+    if (!texture)
+      return nullptr;
+    EncoderData *cursor = clear->next;
+    uint32_t after = clear->barriers;
+    for (;;) {
+      auto list = static_cast<MTLD3D12GraphicsCommandList *>(lists[l]);
+      if (!cursor) {
+        if (BarrierNames(list, after, UINT32_MAX, texture)) {
+          DXMT_STAT_COUNT("#clear folds refused (barrier)", 1);
+          return nullptr;
+        }
+        if (++l == count) {
+          DXMT_STAT_COUNT("#clear folds refused (no target)", 1);
+          return nullptr;
+        }
+        cursor = static_cast<MTLD3D12GraphicsCommandList *>(lists[l])->entry;
+        after = 0;
+        continue;
+      }
+      if (cursor->type == EncoderType::Null || (cursor->type == EncoderType::Blit && cursor->timestamp_only) ||
+          (cursor->type == EncoderType::Clear && cursor->write_count && cursor->writes[0] != texture)) {
+        cursor = cursor->next;
+        continue;
+      }
+      if (BarrierNames(list, after, cursor->barriers, texture)) {
+        DXMT_STAT_COUNT("#clear folds refused (barrier)", 1);
+        return nullptr;
+      }
+      if (cursor->type != EncoderType::Render) {
+        DXMT_STAT_COUNT("#clear folds refused (no target)", 1);
+        return nullptr;
+      }
+      auto r = static_cast<RenderEncoderData *>(cursor);
+      if (ClearSlot(clear, r) < 0) {
+        DXMT_STAT_COUNT("#clear folds refused (mismatch)", 1);
+        return nullptr;
+      }
+      at = l;
+      return r;
+    }
+  }
+
+  // E7: `clear` as the load action of the pass being encoded, unless the pass already clears that plane (a later
+  // clear, M4's, wins).
+  static void
+  ApplyClear(const ClearEncoderData *c, const RenderEncoderData *r, WMTRenderPassInfo &info) {
+    int slot = ClearSlot(c, r);
+    if (slot == kClearDepthStencil) {
+      if ((c->clear_dsv & 1) && r->depth.load_action != WMTLoadActionClear) {
+        info.depth.load_action = WMTLoadActionClear;
+        info.depth.clear_depth = c->depth_stencil.first;
+      }
+      if ((c->clear_dsv & 2) && r->stencil.load_action != WMTLoadActionClear) {
+        info.stencil.load_action = WMTLoadActionClear;
+        info.stencil.clear_stencil = c->depth_stencil.second;
+      }
+    } else if (slot >= 0 && r->colors[slot].load_action != WMTLoadActionClear) {
+      info.colors[slot].load_action = WMTLoadActionClear;
+      info.colors[slot].clear_color = c->color;
+    }
+  }
+
   // GPU efficiency spec E4: lone timestamps (timestamp-only blits) waiting, in order, for the start of the next encoder
   // the queue encodes; and whether one of them was its list's join (the encoder after them joins then).
   std::vector<std::pair<obj_handle_t, uint32_t>> pending_samples_;
@@ -1128,6 +1215,7 @@ public:
     bool fold_timestamps = !dumping && merge_; // E4; dumps keep D3D12's passes
     skipped_.clear();
     skip_ = 0;
+    clear_folds_.clear();
     for (unsigned i = 0; i < Count; i++) {
       auto pCommandList = static_cast<MTLD3D12GraphicsCommandList *>(ppCommandLists[i]);
       custom_resolves_ |= pCommandList->custom_resolves;
@@ -1150,6 +1238,16 @@ public:
             DXMT_STAT_COUNT("#timestamp blits folded", 1);
           current = current->next;
           continue;
+        }
+        if (fold_timestamps && current->type == EncoderType::Clear) { // E7
+          unsigned at;
+          if (auto target = ClearTarget(static_cast<ClearEncoderData *>(current), i, ppCommandLists, Count, at)) {
+            DXMT_STAT_COUNT("#clears folded at execute", 1);
+            clear_folds_.push_back({at, target, static_cast<ClearEncoderData *>(current)});
+            pending_join_ |= current->join;
+            current = current->next;
+            continue;
+          }
         }
         if (fold_timestamps && current->type == EncoderType::Blit && current->timestamp_only) { // E4
           for (unsigned k = 0; k < current->num_samples; k++)
@@ -1275,6 +1373,14 @@ public:
             for (unsigned i = 0; i < data->num_samples; i++)
               render_pass_info.sample_buffers[i] = {data->samples[i].buffer, data->samples[i].index, ~0ull};
           }
+          bool folded = false; // E7: the clears folded into this pass; it joins, as they would have
+          for (auto &f : clear_folds_)
+            if (f.list == i && f.target == current) {
+              ApplyClear(f.clear, data, render_pass_info);
+              folded = true;
+            }
+          if (folded)
+            strict = true;
           if (!dumping && merge_) // M3: also in strict order, the default; dumps keep D3D12's passes
             PlanMerge(data, i, ppCommandLists, Count, render_pass_info);
           else

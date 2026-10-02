@@ -173,13 +173,10 @@ public:
       if (!(before = before->next)->next)
         return 0;
     auto folds = [&](ClearEncoderData *c, bool apply) {
-      if (c->width != r->render_target_width || c->height != r->render_target_height ||
-          c->array_length != r->render_target_array_length)
+      int slot = ClearSlot(c, r);
+      if (slot < 0)
         return false;
-      if (c->clear_dsv) {
-        if (((c->clear_dsv & 1) && r->depth.attachment.ptr() != c->attachment.ptr()) ||
-            ((c->clear_dsv & 2) && r->stencil.attachment.ptr() != c->attachment.ptr()))
-          return false;
+      if (slot == kClearDepthStencil) {
         if (apply && (c->clear_dsv & 1)) {
           r->depth.load_action = WMTLoadActionClear;
           r->depth.clear_depth = c->depth_stencil.first;
@@ -190,15 +187,11 @@ public:
         }
         return true;
       }
-      for (auto &color : r->colors)
-        if (color.attachment && color.attachment.ptr() == c->attachment.ptr() && color.depth_plane == c->depth_plane) {
-          if (apply) {
-            color.load_action = WMTLoadActionClear;
-            color.clear_color = c->color;
-          }
-          return true;
-        }
-      return false;
+      if (apply) {
+        r->colors[slot].load_action = WMTLoadActionClear;
+        r->colors[slot].clear_color = c->color;
+      }
+      return true;
     };
     clears_.clear();
     for (auto *e = before->next; e; e = e->next)
@@ -287,6 +280,11 @@ public:
     encoder_current = p;
     return p;
   };
+
+  uint32_t
+  BarrierCalls() const {
+    return barriers_;
+  }
 
   // A barrier call: `join` when it orders all earlier work before all later work; otherwise the resources it moves
   // out of a write state, whose writers later work waits on (M2).

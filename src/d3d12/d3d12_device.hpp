@@ -59,6 +59,9 @@ public:
   uint32_t barrier_count = 0; // its barrier calls (MacNeutron: M3 merges render passes only with none between)
   std::vector<TimestampResolve> timestamp_resolves;
   bool custom_resolves = false; // some of them into a custom heap, which the GPU can read (GPU overlap spec §3.11)
+  // GPU efficiency spec E7: the resources each barrier call names, as {call index (1-based), ResourceKey}; null: any
+  // (an aliasing or UAV barrier without a resource, or one we don't know).
+  std::vector<std::pair<uint32_t, const void *>> barrier_names;
 };
 
 class MTLD3D12CommandAllocator : public ID3D12CommandAllocator {
