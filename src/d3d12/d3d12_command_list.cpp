@@ -959,7 +959,10 @@ public:
                             (src_box.top / block_width) * pSrc->PlacedFootprint.Footprint.RowPitch + src_box.front * src_depth_pitch;
         cmd_cp.bytes_per_row = pSrc->PlacedFootprint.Footprint.RowPitch;
         cmd_cp.bytes_per_image = src_depth_pitch;
-        cmd_cp.size = {src_box.right - src_box.left, src_box.bottom - src_box.top, src_box.back - src_box.front};
+        // A footprint covers a compressed mip's whole blocks; Metal wants the copy to stop at the mip's edge.
+        uint32_t dst_width = std::max(dst->width() >> dst_level, 1u), dst_height = std::max(dst->height() >> dst_level, 1u);
+        cmd_cp.size = {std::min<uint32_t>(src_box.right - src_box.left, dst_width - DstX),
+                       std::min<uint32_t>(src_box.bottom - src_box.top, dst_height - DstY), src_box.back - src_box.front};
         cmd_cp.dst = dst->current()->texture();
         cmd_cp.level = dst_level;
         cmd_cp.slice = dst_slice;
