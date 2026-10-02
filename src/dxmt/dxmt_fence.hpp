@@ -44,8 +44,8 @@ public:
     return gen_;
   }
 
-  // A value asked of the fence: a queue Signal as it is encoded, or the CPU's. A value lower than the last asked
-  // starts a new generation. Returns the generation the value goes to.
+  // A value asked of the fence: a queue Signal as it is encoded, or the CPU's. A value lower than the fence has
+  // reached starts a new generation. Returns the generation the value goes to.
   Generation ask(uint64_t value);
 
   WMT::Reference<WMT::SharedEvent>
@@ -82,7 +82,6 @@ private:
   WMT::CommandQueue helper_; // the device's; it outlives its fences
   mutable dxmt::mutex mutex_;
   Generation gen_;
-  uint64_t last_ = 0;
   std::atomic<uint32_t> refcount_ = {0u};
 };
 

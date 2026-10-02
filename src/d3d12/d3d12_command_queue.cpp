@@ -882,9 +882,11 @@ class MTLD3D12CommandQueueImpl : public MTLD3D12Pageable<MTLD3D12CommandQueue, I
           for (auto [slot, sample] : r.aliases)
             MTLCounterSampleBuffer_resolveCounterRange(r.samples, sample, 1, (uint64_t *)r.dst + slot, sizeof(uint64_t));
         }
+        // A failed buffer may not have run its MTLEvent signals: forwarded, every value reaches both events.
+        bool failed = inflight.cmdbuf.status() == WMTCommandBufferStatusError;
         for (auto &d : inflight.signals) {
           d.gen.shared.signalValue(d.value);
-          if (d.forward)
+          if (d.forward || failed)
             d.fence->forward(d.gen, d.value);
         }
         cpu_work_.fetch_sub(1, std::memory_order_release);

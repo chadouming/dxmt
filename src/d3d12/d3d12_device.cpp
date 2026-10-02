@@ -298,6 +298,10 @@ public:
     info.depth_compare_function = WMTCompareFunctionAlways;
     default_depth_stencil_state = GetMTLDevice().newDepthStencilState(info);
     fence_helper = GetMTLDevice().newCommandQueue(64);
+    if (!fence_helper) {
+      ERR("Failed to create the fence helper queue");
+      return E_FAIL;
+    }
 
     return S_OK;
   };

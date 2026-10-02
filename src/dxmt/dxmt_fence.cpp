@@ -40,9 +40,12 @@ Fence::Fence(WMT::Device device, WMT::CommandQueue helper) : device_(device), he
 Fence::Generation
 Fence::ask(uint64_t value) {
   std::lock_guard<dxmt::mutex> lock(mutex_);
-  if (value < last_)
+  // Below what the fence has reached: a new generation. Values asked out of order but not reached yet (a queue's 2
+  // asked before the CPU's 1, both still to come) stay in one, where both events keep the highest.
+  // ponytail: the shared event lags a deferred signal, so a lowering by the CPU while a queue's higher value waits
+  // on timestamps stays approximate, as before M5
+  if (value < gen_.shared.signaledValue())
     gen_ = {device_.newSharedEvent(), device_.newEvent()};
-  last_ = value;
   return gen_;
 }
 
