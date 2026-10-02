@@ -16,6 +16,8 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  */
 #include "dxil_lower.hpp"
+#include <cstdlib>
+#include <cstring>
 #include "../airconv_error.hpp"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/Instructions.h"
@@ -62,6 +64,22 @@ ResolveHandle(const EntryInfo &entry, llvm::Value *handle) {
   default:
     return llvm::make_error<UnsupportedFeature>("DXIL: resource handle from an unrecognised op");
   }
+}
+
+static bool
+Switch(const char *name, const char *value) {
+  auto v = std::getenv(name);
+  return v && !strcmp(v, value);
+}
+int
+DxilVsFast() {
+  static const int mode = Switch("DXMT_DXIL_VS_FAST", "1") ? 1 : Switch("DXMT_DXIL_VS_FAST", "late") ? 2 : 0;
+  return mode;
+}
+bool
+DxilBoundsOnce() {
+  static const bool on = Switch("DXMT_DXIL_BOUNDS", "once");
+  return on;
 }
 
 Lowering::Lowering(const DXILShader &dxil, dxbc::context &ctx, const EntryInfo *vertex_outputs) :

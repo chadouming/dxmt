@@ -52,6 +52,18 @@ Lowering::ElementPointer(dxbc::BufferResourceHandle &buffer, llvm::Value *byte_o
 }
 
 llvm::Value *
+Lowering::AccessPointer(dxbc::BufferResourceHandle &buffer, llvm::Value *byte_offset, llvm::Type *ty, unsigned count) {
+  unsigned space = llvm::cast<llvm::PointerType>(buffer.Pointer->getType())->getAddressSpace();
+  auto bytes = ir.CreateBitCast(buffer.Pointer, ir.getInt8PtrTy(space));
+  auto ptr = ir.CreateBitCast(ir.CreateGEP(ir.getInt8Ty(), bytes, byte_offset), ty->getPointerTo(space));
+  if (!buffer.Metadata)
+    return ptr;
+  auto end = ir.CreateAdd(byte_offset, ir.getInt32(count * (ty->getPrimitiveSizeInBits() / 8)));
+  auto in_bounds = ir.CreateICmpULE(end, conv.DecodeRawBufferByteLength(buffer.Metadata));
+  return ir.CreateSelect(in_bounds, ptr, llvm::Constant::getNullValue(ptr->getType()));
+}
+
+llvm::Value *
 Lowering::LoadElement(dxbc::BufferResourceHandle &buffer, llvm::Value *byte_offset, llvm::Type *ty) {
   auto ptr = ElementPointer(buffer, byte_offset, ty);
   return buffer.GlobalCoherent ? (llvm::Value *)air.CreateDeviceCoherentLoad(ty, ptr) : ir.CreateLoad(ty, ptr);
@@ -78,9 +90,17 @@ Lowering::LowerBufferLoad(llvm::CallInst *call, const HandleInfo &h, llvm::Value
   }
   llvm::Value *fields[5] = {};
   unsigned size = elem->getPrimitiveSizeInBits() / 8;
-  for (unsigned c = 0; c < 4; c++)
-    if (mask & (1 << c))
-      fields[c] = LoadElement(*buffer, ir.CreateAdd(byte_offset, ir.getInt32(c * size)), elem);
+  if (DxilBoundsOnce()) { // one check for every component loaded: all of them or none
+    auto base = AccessPointer(*buffer, byte_offset, elem, 32 - __builtin_clz(mask));
+    for (unsigned c = 0; c < 4; c++)
+      if (mask & (1 << c)) {
+        auto ptr = ir.CreateConstGEP1_32(elem, base, c);
+        fields[c] = buffer->GlobalCoherent ? (llvm::Value *)air.CreateDeviceCoherentLoad(elem, ptr) : ir.CreateLoad(elem, ptr);
+      }
+  } else
+    for (unsigned c = 0; c < 4; c++)
+      if (mask & (1 << c))
+        fields[c] = LoadElement(*buffer, ir.CreateAdd(byte_offset, ir.getInt32(c * size)), elem);
   fields[4] = ir.getInt32(1); // status: fully mapped
   Replace(call, Aggregate(ty, fields));
   return llvm::Error::success();

@@ -34,6 +34,14 @@ struct HandleInfo {
 llvm::Expected<HandleInfo> ResolveHandle(const EntryInfo &entry, llvm::Value *handle);
 
 // Replaces dx.op calls with AIR, one call at a time, inside the AIR entry function being built.
+// Translation experiments (GPU efficiency spec E3, E5; MacNeutron), read once from the environment:
+// DXMT_DXIL_VS_FAST=1 lets pre-raster stages reassociate and fuse (no invariance: an upper bound); =late keeps their
+// math strict but tells Metal's compiler it may contract and reassociate late while the invariant position stays
+// exact (what MSL's -fpreserve-invariance emits). DXMT_DXIL_BOUNDS=once checks a buffer access's bounds once for all
+// its components (Metal Shader Converter's form) instead of per component.
+int DxilVsFast(); // 0, 1 or 2 (late)
+bool DxilBoundsOnce();
+
 class Lowering {
 public:
   // `vertex_outputs`: for a geometry shader, the vertex shader whose outputs its inputs read (from the payload).
@@ -61,6 +69,8 @@ private:
   // Bound-checked pointer to `ty` at `byte_offset` in a buffer; null when out of bounds (reads 0, drops writes).
   llvm::Value *ElementPointer(dxbc::BufferResourceHandle &buffer, llvm::Value *byte_offset, llvm::Type *ty);
   llvm::Value *LoadElement(dxbc::BufferResourceHandle &buffer, llvm::Value *byte_offset, llvm::Type *ty);
+  // DXMT_DXIL_BOUNDS=once: a pointer to `count` consecutive `ty` at `byte_offset`, null unless all are in bounds.
+  llvm::Value *AccessPointer(dxbc::BufferResourceHandle &buffer, llvm::Value *byte_offset, llvm::Type *ty, unsigned count);
   void StoreElement(dxbc::BufferResourceHandle &buffer, llvm::Value *byte_offset, llvm::Value *value);
   llvm::Error LowerBufferLoad(llvm::CallInst *call, const HandleInfo &h, llvm::Value *byte_offset, uint32_t mask);
   llvm::Error LowerBufferStore(llvm::CallInst *call, const HandleInfo &h, llvm::Value *byte_offset, unsigned first_value, uint32_t mask);
